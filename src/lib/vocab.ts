@@ -1,0 +1,142 @@
+// Metriq — parser çıktısına kalibrasyon kurallarını uygular → MtoRow[]
+// Kurallar üç gerçek müşteri vakasıyla kalibre edildi (bkz. dwg-takeoff/METODOLOJI.md)
+import type { CalibrationRules, MtoRow, RunTotals, SteelRow } from './types';
+import type { ParsedComponent, ParseResult } from './parser/nwd';
+
+let seq = 0;
+const rid = () => `r${Date.now().toString(36)}${(seq++).toString(36)}`;
+
+export function applyRules(parsed: ParseResult, rules: CalibrationRules): {
+  rows: MtoRow[]; steel: SteelRow[]; totals: RunTotals;
+} {
+  const rows: MtoRow[] = [];
+  const comps = parsed.components;
+
+  // refakat flanşı tespiti: akış sırasında ±2 komşuda vana/enstrüman/süzgeç
+  const NEI = new Set(['Valve', 'InlineInstrument', 'Strainer', 'SpacerDisk']);
+  const companion = new Set<number>();
+  comps.forEach((c, i) => {
+    if (c.klass !== 'Flange') return;
+    for (let j = Math.max(0, i - 2); j <= Math.min(comps.length - 1, i + 2); j++) {
+      if (j !== i && NEI.has(comps[j].klass)) { companion.add(i); break; }
+    }
+  });
+
+  const agg = new Map<string, MtoRow>();
+  function push(line: string, code: string, sub: string, s1: number | null, s2: number,
+    qty: number, unit: 'M' | 'EA', remark: string, scope: 'MAIN' | 'INFO') {
+    code = rules.codeRenames[code] ?? code;
+    const key = [line, code, sub, s1, s2, unit, scope].join('|');
+    const ex = agg.get(key);
+    if (ex) { ex.qty += qty; if (remark && !ex.remark.includes(remark)) ex.remark = [ex.remark, remark].filter(Boolean).join('; '); }
+    else agg.set(key, { id: rid(), line, code, sub, s1, s2, qty, unit, remark, scope });
+  }
+
+  comps.forEach((c: ParsedComponent, i) => {
+    const line = c.line || '?';
+    switch (c.klass) {
+      case 'Pipe':
+        push(line, 'PIPE', '', c.s1, 0, (c.lengthMm / 1000) * rules.grossPipeFactor, 'M', '', 'MAIN');
+        break;
+      case 'Elbow': {
+        const is45 = c.desc.includes('45 DEG');
+        if (is45 && rules.merge45Into90) push(line, '90 BEND', '', c.s1, 0, 1, 'EA', '45° (birleşik)', 'MAIN');
+        else push(line, is45 ? '45 BEND' : '90 BEND', '', c.s1, 0, 1, 'EA', '', 'MAIN');
+        break;
+      }
+      case 'Tee': {
+        const red = c.desc.includes('RED') || (c.s2 > 0 && c.s2 !== c.s1);
+        push(line, red ? 'RED TEE' : 'EQ TEE', '', c.s1, red ? c.s2 : 0, 1, 'EA', '', 'MAIN');
+        break;
+      }
+      case 'Reducer': {
+        const ecc = c.desc.includes('ECC');
+        const code = rules.vocab === 'hygienic' ? (ecc ? 'ECC RED' : 'CON RED') : 'CON RED';
+        push(line, code, '', c.s1, c.s2, 1, 'EA', rules.vocab === 'hygienic' ? '' : (ecc ? 'ECC' : ''), 'MAIN');
+        break;
+      }
+      case 'BlindFlange':
+        push(line, 'BLIND FLANGE', '', c.s1, 0, 1, 'EA', '', 'MAIN');
+        break;
+      case 'Flange': {
+        const excluded = rules.excludeCompanionFlanges && companion.has(i);
+        if (rules.vocab === 'hygienic') {
+          const s1 = c.s1 ?? null;
+          push(line, 'BACKING FLANGE', c.sub, s1, 0, 1, 'EA', s1 == null ? 'boyut ? (elemeyle ata)' : '', excluded ? 'INFO' : 'MAIN');
+          if (rules.collarOneToOne) push(line, 'COLLAR', '1:1', s1, 0, 1, 'EA', '', excluded ? 'INFO' : 'MAIN');
+        } else {
+          push(line, 'FLANGE', c.sub, c.s1, 0, 1, 'EA', excluded ? 'vana/enstrüman refakatçisi' : '', excluded ? 'INFO' : 'MAIN');
+        }
+        break;
+      }
+      case 'Valve':
+      case 'Strainer': {
+        const scope = rules.includeValvesInMain ? 'MAIN' : 'INFO';
+        const code = rules.vocab === 'hygienic' ? 'MV' : (c.klass === 'Strainer' ? 'STRAINER' : 'VALVE');
+        push(line, code, c.sub || (c.klass === 'Strainer' ? 'FILTER' : ''), c.s1, 0, 1, 'EA', '', scope);
+        break;
+      }
+      case 'InlineInstrument':
+        push(line, 'INSTRUMENT', c.sub, c.s1, 0, 1, 'EA', '', 'INFO');
+        break;
+      case 'Cap':
+        push(line, 'CAP', '', c.s1, 0, 1, 'EA', '', 'MAIN');
+        break;
+      case 'Support':
+        push(line, 'SUPPORT', '', c.s1, 0, 1, 'EA', '', 'INFO');
+        break;
+      default:
+        push(line, c.klass.toUpperCase(), '', c.s1, 0, 1, 'EA', '', 'INFO');
+    }
+  });
+
+  if (rules.includeFasteners) {
+    const f = parsed.fasteners;
+    if (f.gaskets) push('*', 'GASKET', '', null, 0, f.gaskets, 'EA', 'bağlantı başına 1', 'MAIN');
+    if (f.boltSets) push('*', 'BOLT SET', '', null, 0, f.boltSets, 'EA', '', 'MAIN');
+    if (f.stubEnds) push('*', 'STUB END', '', null, 0, f.stubEnds, 'EA', '', 'MAIN');
+  }
+
+  for (const r of agg.values()) {
+    if (r.unit === 'M') r.qty = Math.round(r.qty * 1000) / 1000;
+    rows.push(r);
+  }
+  const codeOrder = ['PIPE', '90 BEND', '45 BEND', 'EQ TEE', 'RED TEE', 'CON RED', 'ECC RED',
+    'FLANGE', 'BACKING FLANGE', 'COLLAR', 'BLIND FLANGE', 'WELDOLET', 'MV', 'VALVE'];
+  rows.sort((a, b) => a.line.localeCompare(b.line)
+    || (codeOrder.indexOf(a.code) + 100) - (codeOrder.indexOf(b.code) + 100)
+    || (b.s1 ?? -1) - (a.s1 ?? -1));
+
+  // çelik: profil+boy bazında grupla
+  const steelMap = new Map<string, SteelRow>();
+  for (const m of parsed.steelMembers) {
+    const key = `${m.profile}|${Math.round(m.lengthMm)}`;
+    const ex = steelMap.get(key);
+    if (ex) { ex.count += 1; ex.totalKg += m.kg ?? 0; }
+    else steelMap.set(key, { id: rid(), profile: m.profile, lengthMm: Math.round(m.lengthMm), count: 1, totalKg: m.kg ?? 0 });
+  }
+  const steel = [...steelMap.values()].sort((a, b) => b.lengthMm - a.lengthMm);
+
+  const totals = computeTotals(rows, steel, parsed.steelMembers.reduce((s, m) => s + m.lengthMm, 0));
+  return { rows, steel, totals };
+}
+
+export function computeTotals(rows: MtoRow[], steel: SteelRow[], steelMmOverride?: number): RunTotals {
+  const main = rows.filter(r => r.scope === 'MAIN');
+  const pipeM = main.filter(r => r.code === 'PIPE').reduce((s, r) => s + r.qty, 0);
+  const flangesEa = main.filter(r => r.code.includes('FLANGE') || r.code === 'COLLAR').reduce((s, r) => s + r.qty, 0);
+  const valvesEa = rows.filter(r => ['MV', 'VALVE', 'STRAINER'].includes(r.code)).reduce((s, r) => s + r.qty, 0);
+  const fittingsEa = main.filter(r => ['90 BEND', '45 BEND', 'EQ TEE', 'RED TEE', 'CON RED', 'ECC RED', 'WELDOLET', 'CAP'].includes(r.code)).reduce((s, r) => s + r.qty, 0);
+  const steelMm = steelMmOverride ?? steel.reduce((s, r) => s + r.lengthMm * r.count, 0);
+  const steelKg = steel.reduce((s, r) => s + r.totalKg, 0);
+  const lines = [...new Set(rows.map(r => r.line).filter(l => l !== '*' && l !== '?'))].sort();
+  return {
+    pipeM: Math.round(pipeM * 100) / 100,
+    fittingsEa: Math.round(fittingsEa),
+    flangesEa: Math.round(flangesEa),
+    valvesEa: Math.round(valvesEa),
+    steelM: Math.round(steelMm / 10) / 100,
+    steelKg: Math.round(steelKg * 10) / 10,
+    lines,
+  };
+}

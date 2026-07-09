@@ -1,26 +1,119 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/* ── Metriq tasarım dili: teknik çizim × rafine koyu ─────────────────── */
+@theme {
+  --color-bg: #0b0e13;
+  --color-panel: #11151c;
+  --color-panel2: #161b24;
+  --color-ink: #e9ecf1;
+  --color-muted: #8a93a3;
+  --color-line: rgba(255, 255, 255, 0.08);
+  --color-copper: #d08a45;
+  --color-copper-bright: #eaa45c;
+  --color-steel: #7fa6c9;
+  --color-mint: #7fc9a6;
+  --color-danger: #d0776f;
+  --font-display: var(--font-archivo);
+  --font-mono: var(--font-jetbrains);
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
+:root { color-scheme: dark; }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background-color: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-archivo), system-ui, sans-serif;
+  background-image:
+    radial-gradient(ellipse 90% 70% at 50% -10%, rgba(127, 166, 201, 0.07), transparent 60%),
+    linear-gradient(rgba(255, 255, 255, 0.022) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.022) 1px, transparent 1px);
+  background-size: 100% 100%, 32px 32px, 32px 32px;
+  min-height: 100vh;
 }
+
+.num, td.num, .font-data { font-family: var(--font-jetbrains), monospace; font-variant-numeric: tabular-nums; }
+
+/* ── ölçü çizgisi motifi (CAD dimension line) ── */
+.dimline { position: relative; display: inline-block; padding-bottom: 10px; }
+.dimline::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 1px;
+  background: linear-gradient(90deg, transparent, var(--color-copper) 12%, var(--color-copper) 88%, transparent);
+}
+.dimline::before {
+  content: ''; position: absolute; left: 12%; right: 12%; bottom: -3px; height: 7px;
+  background:
+    linear-gradient(var(--color-copper), var(--color-copper)) left center / 1px 7px no-repeat,
+    linear-gradient(var(--color-copper), var(--color-copper)) right center / 1px 7px no-repeat;
+}
+
+.panel { background: var(--color-panel); border: 1px solid var(--color-line); border-radius: 10px; position: relative; }
+.panel-corners::before, .panel-corners::after {
+  content: ''; position: absolute; width: 14px; height: 14px;
+  border-color: rgba(208, 138, 69, 0.55); border-style: solid; pointer-events: none;
+}
+.panel-corners::before { top: -1px; left: -1px; border-width: 1px 0 0 1px; border-top-left-radius: 10px; }
+.panel-corners::after { bottom: -1px; right: -1px; border-width: 0 1px 1px 0; border-bottom-right-radius: 10px; }
+
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--font-jetbrains), monospace; font-size: 11px; letter-spacing: 0.04em;
+  padding: 3px 9px; border-radius: 999px; border: 1px solid var(--color-line);
+  background: rgba(255, 255, 255, 0.03);
+}
+.chip-dot { width: 6px; height: 6px; border-radius: 999px; }
+
+.dropzone {
+  border: 1.5px dashed rgba(208, 138, 69, 0.4); border-radius: 12px;
+  background:
+    linear-gradient(rgba(208, 138, 69, 0.03), rgba(208, 138, 69, 0.015)),
+    repeating-linear-gradient(-45deg, transparent 0 14px, rgba(255,255,255,0.012) 14px 15px);
+  transition: border-color 0.25s, background-color 0.25s, transform 0.15s;
+}
+.dropzone:hover, .dropzone.drag { border-color: var(--color-copper-bright); background-color: rgba(208, 138, 69, 0.06); }
+.dropzone.drag { transform: scale(1.005); }
+
+.mtable { width: 100%; border-collapse: collapse; font-size: 13px; }
+.mtable th {
+  text-align: left; font-weight: 600; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--color-muted); padding: 8px 10px; border-bottom: 1px solid var(--color-line);
+  position: sticky; top: 0; background: var(--color-panel); z-index: 1;
+}
+.mtable td { padding: 7px 10px; border-bottom: 1px solid rgba(255, 255, 255, 0.04); }
+.mtable tr:hover td { background: rgba(127, 166, 201, 0.045); }
+.mtable input, .mtable select {
+  background: transparent; border: 1px solid transparent; border-radius: 6px;
+  padding: 2px 6px; width: 100%; font: inherit; color: inherit;
+}
+.mtable input:hover, .mtable select:hover { border-color: var(--color-line); }
+.mtable input:focus, .mtable select:focus { border-color: var(--color-copper); outline: none; background: rgba(208, 138, 69, 0.05); }
+
+.btn {
+  display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
+  border-radius: 8px; padding: 8px 16px; font-size: 13px; font-weight: 600;
+  border: 1px solid var(--color-line); color: var(--color-ink);
+  background: var(--color-panel2); transition: all 0.18s;
+}
+.btn:hover { border-color: rgba(208, 138, 69, 0.5); background: #1a2029; }
+.btn:disabled { opacity: 0.45; cursor: default; }
+.btn-primary {
+  background: linear-gradient(135deg, #c07c39, #a5652c);
+  border-color: rgba(234, 164, 92, 0.5); color: #fff7ee;
+  box-shadow: 0 2px 14px rgba(192, 124, 57, 0.25);
+}
+.btn-primary:hover { background: linear-gradient(135deg, #d08a45, #b06f31); border-color: var(--color-copper-bright); }
+.btn-ghost { background: transparent; border-color: transparent; color: var(--color-muted); }
+.btn-ghost:hover { color: var(--color-ink); border-color: var(--color-line); background: rgba(255,255,255,0.03); }
+
+@keyframes riseIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+.rise { animation: riseIn 0.5s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+.rise-1 { animation-delay: 0.05s; } .rise-2 { animation-delay: 0.12s; }
+.rise-3 { animation-delay: 0.19s; } .rise-4 { animation-delay: 0.26s; }
+
+@keyframes pulseDot { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
+.pulse { animation: pulseDot 1.2s ease-in-out infinite; }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: #2a3140; border-radius: 6px; border: 2px solid var(--color-bg); }
+::-webkit-scrollbar-track { background: transparent; }
+
+select option { background: var(--color-panel2); color: var(--color-ink); }

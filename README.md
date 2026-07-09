@@ -1,36 +1,23 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# metriq
 
-## Getting Started
+**Modelden metraja, saniyeler içinde.** CAD modelini (Navisworks NWD) yükle → doğrulanmış boru + fitting + çelik metrajını gör → müşteri formatında Excel indir.
 
-First, run the development server:
+Motor, üç gerçek proje dosyasıyla kalem-kalem kalibre edildi (bir vakada müşteri cevabıyla **19/19 satır birebir**).
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+## Özellikler
+- 🔩 **NWD ayrıştırma** doğrudan sunucuda — Autodesk hesabı/harici servis gerekmez
+- 📏 OD-doğrulamalı boyutlar: ASME B36.10 + DIN 11850-2 (hijyenik metrik TRU-BORE)
+- 🧭 Hat-bazlı satırlar (S1…, STEAM MAIN HEADER…), çelik profil metrajı (m + kg)
+- 🎛 **Kalibrasyon profilleri**: 45°→90 birleştirme, COLLAR 1:1, refakat flanşı, gross katsayısı, kod eşlemeleri — düzenlemelerden öğrenir
+- 📤 Excel (müşteri şemasında), geçmiş, TR/EN arayüz
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Kurulum (5 dakika)
+1. **Supabase** → yeni proje aç → SQL Editor'de `supabase/migration.sql`'i çalıştır → Storage'da **private** `models` bucket'ı oluştur.
+2. `.env.local` (bkz. `.env.example`): `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_BUCKET=models`.
+3. `npm i && npm run dev` — env yoksa **yerel modda** çalışır (`.data/` klasörü; Vercel'de kalıcı değildir).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Deploy
+Vercel'e bağlıyken: `vercel --prod`. Env değişkenlerini Vercel'e ekle (`vercel env add`).
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Mimari
+Next.js App Router (Node runtime) · Supabase (DB+Storage, servis rolü yalnız sunucuda) · exceljs · saf-TS NWD parser (`src/lib/parser/`) — regresyon testleri gerçek dosyalarla.
