@@ -1,5 +1,6 @@
 import { cookies } from 'next/headers';
 import { listRuns, listCalibrations, isSupabase } from '@/lib/store';
+import { isPg } from '@/lib/store-pg';
 import { t, type Lang } from '@/lib/i18n';
 import { UploadZone } from '@/components/upload-zone';
 import { RunsList } from '@/components/runs-list';
@@ -11,7 +12,7 @@ export default async function Dashboard() {
 
   return (
     <div className="space-y-8">
-      {!isSupabase && (
+      {!isSupabase && !isPg && (
         <div className="rise panel px-4 py-3 text-[12px] text-steel border-steel/25">
           ⚙ {t(lang, 'setup_needed')}
         </div>

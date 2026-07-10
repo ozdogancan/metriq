@@ -4,6 +4,7 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { Run, MtoRow, SteelRow, Calibration } from './types';
+import { isPg, kvGet, kvSet, kvDel, kvList, pgPutFile, pgGetFile, pgDelFiles } from './store-pg';
 
 const SB_URL = process.env.SUPABASE_URL;
 const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -22,10 +23,12 @@ const DATA_DIR = process.env.VERCEL
   ? path.join('/tmp', 'metriq-data')
   : path.join(process.cwd(), '.data');
 async function readJson<T>(name: string, fallback: T): Promise<T> {
+  if (isPg) return (await kvGet<T>(name)) ?? fallback;
   try { return JSON.parse(await fs.readFile(path.join(DATA_DIR, name), 'utf8')) as T; }
   catch { return fallback; }
 }
 async function writeJson(name: string, data: unknown) {
+  if (isPg) { await kvSet(name, data); return; }
   await fs.mkdir(DATA_DIR, { recursive: true });
   await fs.writeFile(path.join(DATA_DIR, name), JSON.stringify(data, null, 1), 'utf8');
 }
@@ -37,6 +40,11 @@ export async function listRuns(): Promise<Run[]> {
     if (error) throw error;
     return (data ?? []).map(dbRun);
   }
+  // pg: her run kendi anahtarında — eşzamanlı yüklemelerde yarış yok
+  if (isPg) {
+    const runs = await kvList<Run>('run-');
+    return runs.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 100);
+  }
   const runs = await readJson<Run[]>('runs.json', []);
   return runs.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
@@ -46,6 +54,7 @@ export async function getRun(id: string): Promise<Run | null> {
     const { data } = await client().from('runs').select('*').eq('id', id).maybeSingle();
     return data ? dbRun(data) : null;
   }
+  if (isPg) return kvGet<Run>(`run-${id}`);
   return (await readJson<Run[]>('runs.json', [])).find(r => r.id === id) ?? null;
 }
 
@@ -59,6 +68,7 @@ export async function saveRun(run: Run): Promise<void> {
     if (error) throw error;
     return;
   }
+  if (isPg) { await kvSet(`run-${run.id}`, run); return; }
   const runs = await readJson<Run[]>('runs.json', []);
   const i = runs.findIndex(r => r.id === run.id);
   if (i >= 0) runs[i] = run; else runs.push(run);
@@ -70,6 +80,13 @@ export async function deleteRun(id: string): Promise<void> {
     await client().from('mto_rows').delete().eq('run_id', id);
     await client().from('steel_rows').delete().eq('run_id', id);
     await client().from('runs').delete().eq('id', id);
+    return;
+  }
+  if (isPg) {
+    await kvDel(`run-${id}`);
+    await kvDel(`rows-${id}.json`);
+    await kvDel(`steel-${id}.json`);
+    await pgDelFiles(`${id}/`);
     return;
   }
   await writeJson('runs.json', (await readJson<Run[]>('runs.json', [])).filter(r => r.id !== id));
@@ -172,6 +189,11 @@ export async function storeFile(runId: string, fileName: string, buf: Buffer): P
     if (error) throw error;
     return key;
   }
+  if (isPg) {
+    const key = `${runId}/${fileName}`;
+    await pgPutFile(key, buf);
+    return key;
+  }
   const dir = path.join(DATA_DIR, 'files', runId);
   await fs.mkdir(dir, { recursive: true });
   const p = path.join(dir, fileName);
@@ -185,6 +207,7 @@ export async function fetchStoredFile(key: string): Promise<Buffer> {
     if (error || !data) throw error ?? new Error('file not found');
     return Buffer.from(await data.arrayBuffer());
   }
+  if (isPg) return pgGetFile(key);
   return fs.readFile(key);
 }
 
@@ -219,6 +242,11 @@ export async function updateRunMeta(runId: string, patch: { progress?: import('.
     if (patch.fasteners !== undefined) db.fasteners = patch.fasteners;
     const { error } = await client().from('runs').update(db).eq('id', runId);
     if (error) throw error;
+    return;
+  }
+  if (isPg) {
+    const r = await kvGet<Run>(`run-${runId}`);
+    if (r) await kvSet(`run-${runId}`, { ...r, ...patch });
     return;
   }
   const runs = await readJson<Run[]>('runs.json', []);
