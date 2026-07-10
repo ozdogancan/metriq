@@ -39,8 +39,30 @@ export function CalibrationsPanel({ lang, initial }: { lang: Lang; initial: Cali
     setOpenId(cal.id);
   }
 
+  const tr = lang === 'tr';
   return (
     <div className="space-y-4">
+      {/* Kalibrasyonun ne olduğu ilk bakışta anlaşılmalı */}
+      <div className="rise panel panel-corners px-5 py-4">
+        <div className="text-[12px] font-semibold uppercase tracking-wider text-copper">
+          {tr ? '◈ Kalibrasyon nedir?' : '◈ What is a calibration?'}
+        </div>
+        <p className="mt-2 text-[13px] leading-relaxed text-muted">
+          {tr
+            ? 'Her müşteri metrajı farklı sayar: kimi 45° dirseği 90°\'a katar, kimi vana saymaz, kimi refakat flanşını hariç tutar. Kalibrasyon, bir müşterinin bu sayım alışkanlıklarının kayıtlı profilidir.'
+            : 'Every client counts differently: some fold 45° elbows into 90°, some exclude valves, some skip companion flanges. A calibration is the saved profile of one client\'s counting conventions.'}
+        </p>
+        <ol className="mt-2.5 space-y-1 text-[12.5px] leading-relaxed text-muted">
+          <li><span className="font-data text-copper-bright">1.</span> {tr ? 'Metraj sonucunu incele, gerekirse satırları elle düzelt.' : 'Review a take-off; correct rows by hand if needed.'}</li>
+          <li><span className="font-data text-copper-bright">2.</span> {tr ? 'Metraj sayfasının altındaki "Kalibrasyon olarak kaydet" ile düzeltmelerini profile işle.' : 'Use "Save as calibration" at the bottom of the take-off page to fold your corrections into a profile.'}</li>
+          <li><span className="font-data text-copper-bright">3.</span> {tr ? 'Sonraki yüklemede bu profili seç — aynı müşteri için kurallar otomatik uygulanır.' : 'Pick that profile on the next upload — the client\'s rules apply automatically.'}</li>
+        </ol>
+        <p className="mt-2.5 font-data text-[11px] text-muted/80">
+          {tr
+            ? 'Aşağıdaki anahtarlarla kuralları elle de ayarlayabilirsin; genelde gerek kalmaz.'
+            : 'You can also tune the rules manually below; usually unnecessary.'}
+        </p>
+      </div>
       <div className="rise flex gap-2">
         <button className="btn btn-primary" onClick={() => addNew('steel-plant')}>+ {t(lang, 'vocab_steel')}</button>
         <button className="btn" onClick={() => addNew('hygienic')}>+ {t(lang, 'vocab_hygienic')}</button>

@@ -88,7 +88,12 @@ body {
     linear-gradient(var(--color-copper), var(--color-copper)) right center / 1px 7px no-repeat;
 }
 
-.panel { background: var(--color-panel); border: 1px solid var(--color-line); border-radius: 10px; position: relative; }
+/* position/arka plan @layer components'ta: Tailwind utility'leri (absolute, border-danger/40 vb.)
+   gerektiğinde bunları EZEBİLMELİ — unlayered bırakılınca bildirim paneli akış-içi kalıp header'ı itiyordu */
+@layer components {
+  .panel { background: var(--color-panel); border: 1px solid var(--color-line); border-radius: 10px; position: relative; }
+  .panel-corners { position: relative; }
+}
 .panel-corners::before, .panel-corners::after {
   content: ''; position: absolute; width: 14px; height: 14px;
   border-color: rgba(208, 138, 69, 0.55); border-style: solid; pointer-events: none;
@@ -163,6 +168,9 @@ button:focus-visible {
 
 @keyframes pulseDot { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
 .pulse { animation: pulseDot 1.2s ease-in-out infinite; }
+
+/* scrollbar belirip kaybolunca içerik yatay kaymasın (ör. bildirim paneli açılınca) */
+html { scrollbar-gutter: stable; }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 6px; border: 2px solid var(--color-bg); }

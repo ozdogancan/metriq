@@ -160,7 +160,7 @@ export function NotificationsBell({ lang }: { lang: Lang }) {
               {pushErr}
             </div>
           )}
-          <div className="max-h-[380px] overflow-y-auto">
+          <div className="max-h-[min(380px,60vh)] overflow-y-auto">
             {items.length === 0 && (
               <div className="px-4 py-8 text-center text-[12px] text-muted">
                 {lang === 'tr' ? 'Henüz bildirim yok.' : 'No notifications yet.'}

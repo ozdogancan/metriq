@@ -21,6 +21,7 @@ function errorKey(e: unknown): TKey {
 
 export function UploadZone({ lang, calibrations }: { lang: Lang; calibrations: CalOpt[] }) {
   const router = useRouter();
+  const tr = lang === 'tr';
   const fileRef = useRef<HTMLInputElement>(null);
   const [drag, setDrag] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -86,23 +87,49 @@ export function UploadZone({ lang, calibrations }: { lang: Lang; calibrations: C
 
   return (
     <div className="space-y-4">
+      {/* Etiketli form — üç alanın ne işe yaradığı görünür olmalı (kaotik hissetmesin) */}
       <div className="grid gap-3 sm:grid-cols-3">
-        <input
-          value={projectName}
-          onChange={e => setProjectName(e.target.value)}
-          placeholder={t(lang, 'project_name')}
-          className="panel px-3.5 py-2.5 text-[13px] outline-none focus:border-copper/60 placeholder:text-muted/60"
-        />
-        <select value={vocab} onChange={e => setVocab(e.target.value as VocabProfileId)}
-          className="panel px-3.5 py-2.5 text-[13px] outline-none focus:border-copper/60">
-          <option value="steel-plant">{t(lang, 'vocab_steel')}</option>
-          <option value="hygienic">{t(lang, 'vocab_hygienic')}</option>
-        </select>
-        <select value={calId} onChange={e => setCalId(e.target.value)}
-          className="panel px-3.5 py-2.5 text-[13px] outline-none focus:border-copper/60">
-          <option value="">{t(lang, 'calibration_none')}</option>
-          {calibrations.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
+        <div>
+          <label htmlFor="uz-name" className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-muted">
+            {tr ? 'Proje adı' : 'Project name'}
+            <span className="ml-1.5 font-normal normal-case tracking-normal opacity-70">
+              {tr ? '(opsiyonel)' : '(optional)'}
+            </span>
+          </label>
+          <input
+            id="uz-name"
+            value={projectName}
+            onChange={e => setProjectName(e.target.value)}
+            placeholder={tr ? 'boş kalırsa dosya adı kullanılır' : 'file name is used if empty'}
+            className="panel w-full px-3.5 py-2.5 text-[13px] outline-none focus:border-copper/60 placeholder:text-muted/60"
+          />
+        </div>
+        <div>
+          <label htmlFor="uz-vocab" className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-muted">
+            {tr ? 'Tesisat tipi' : 'System type'}
+            <span className="ml-1.5 font-normal normal-case tracking-normal opacity-70">
+              {tr ? '— sayım dilini belirler' : '— sets the counting language'}
+            </span>
+          </label>
+          <select id="uz-vocab" value={vocab} onChange={e => setVocab(e.target.value as VocabProfileId)}
+            className="panel w-full px-3.5 py-2.5 text-[13px] outline-none focus:border-copper/60">
+            <option value="steel-plant">{t(lang, 'vocab_steel')}</option>
+            <option value="hygienic">{t(lang, 'vocab_hygienic')}</option>
+          </select>
+        </div>
+        <div>
+          <label htmlFor="uz-cal" className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-muted">
+            {tr ? 'Kalibrasyon' : 'Calibration'}
+            <span className="ml-1.5 font-normal normal-case tracking-normal opacity-70">
+              {tr ? '— önceki düzeltmelerin' : '— your past corrections'}
+            </span>
+          </label>
+          <select id="uz-cal" value={calId} onChange={e => setCalId(e.target.value)}
+            className="panel w-full px-3.5 py-2.5 text-[13px] outline-none focus:border-copper/60">
+            <option value="">{t(lang, 'calibration_none')}</option>
+            {calibrations.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </div>
       </div>
 
       <div
