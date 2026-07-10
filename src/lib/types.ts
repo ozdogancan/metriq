@@ -44,6 +44,8 @@ export interface Run {
   error?: string;
   totals: RunTotals;
   fasteners: { gaskets: number; boltSets: number; stubEnds: number };
+  progress?: StageEvent[];
+  ai?: AiAudit | null;
   createdAt: string;
 }
 
@@ -91,3 +93,50 @@ export const DEFAULT_RULES: Record<VocabProfileId, CalibrationRules> = {
     codeRenames: {},
   },
 };
+
+// ---------- İşleme aşamaları (canlı pipeline görünümü) ----------
+export type StageKey = 'upload' | 'scan' | 'extract' | 'size' | 'lines' | 'rules' | 'steel' | 'audit' | 'finalize';
+export interface StageEvent {
+  key: StageKey;
+  status: 'pending' | 'active' | 'done';
+  startedAt?: string;
+  metrics?: Record<string, string | number>;
+}
+export const STAGE_ORDER: StageKey[] = ['upload', 'scan', 'extract', 'size', 'lines', 'rules', 'steel', 'audit', 'finalize'];
+
+// ---------- AI denetçi (Claude — komplexity'ye göre model) ----------
+export interface AiFinding {
+  severity: 'info' | 'warn' | 'critical';
+  message: string;
+  rowId?: string;
+}
+export interface AiAudit {
+  model: string;              // kullanılan Claude modeli
+  complexity: number;         // 0-100
+  tier: 'basit' | 'orta' | 'karmaşık';
+  findings: AiFinding[];
+  summary: string;
+  createdAt: string;
+}
+
+// ---------- Bildirimler ----------
+export interface AppNotification {
+  id: string;
+  kind: 'run_done' | 'run_error' | 'system';
+  title: string;
+  body: string;
+  url: string;
+  read: boolean;
+  createdAt: string;
+}
+
+// ---------- Öğrenme olayları (ML-uyumlu düzeltme günlüğü) ----------
+export interface LearningEvent {
+  id: string;
+  runId: string;
+  ts: string;
+  kind: 'row_edit' | 'row_add' | 'row_delete' | 'calibration_saved' | 'run_feedback';
+  before: Partial<MtoRow> | null;
+  after: Partial<MtoRow> | null;
+  context: { vocab: string; fileName?: string; calibrationId?: string | null };
+}

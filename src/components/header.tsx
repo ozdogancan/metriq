@@ -4,6 +4,7 @@ import Image from 'next/image';
 import { useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { t, type Lang } from '@/lib/i18n';
+import { NotificationsBell } from '@/components/notifications-bell';
 
 export function Header({ lang, theme: initialTheme }: { lang: Lang; theme: 'dark' | 'light' }) {
   const router = useRouter();
@@ -45,6 +46,8 @@ export function Header({ lang, theme: initialTheme }: { lang: Lang; theme: 'dark
           <Link href="/calibrations" className={`btn btn-ghost ${pathname.startsWith('/calibrations') ? '!text-ink !border-line' : ''}`}>
             {t(lang, 'calibrations')}
           </Link>
+          {/* bildirimler */}
+          <NotificationsBell lang={lang} />
           {/* tema */}
           <button onClick={toggleTheme} title={theme === 'dark' ? 'Açık tema' : 'Koyu tema'}
             className="btn btn-ghost !px-2.5" aria-label="theme">

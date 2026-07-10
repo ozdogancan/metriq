@@ -2,7 +2,7 @@
 
 **Modelden metraja, saniyeler içinde.** CAD modelini (Navisworks NWD) yükle → doğrulanmış boru + fitting + çelik metrajını gör → müşteri formatında Excel indir.
 
-Motor, üç gerçek proje dosyasıyla kalem-kalem kalibre edildi (bir vakada müşteri cevabıyla **19/19 satır birebir**).
+Motor, üç gerçek proje dosyasıyla kalem-kalem kalibre edildi (bir vakada müşteri cevabıyla **19/19 satır birebir** — bkz. `docs/04-calibration-log.md`).
 
 ## Özellikler
 - 🔩 **NWD ayrıştırma** doğrudan sunucuda — Autodesk hesabı/harici servis gerekmez
@@ -10,6 +10,26 @@ Motor, üç gerçek proje dosyasıyla kalem-kalem kalibre edildi (bir vakada mü
 - 🧭 Hat-bazlı satırlar (S1…, STEAM MAIN HEADER…), çelik profil metrajı (m + kg)
 - 🎛 **Kalibrasyon profilleri**: 45°→90 birleştirme, COLLAR 1:1, refakat flanşı, gross katsayısı, kod eşlemeleri — düzenlemelerden öğrenir
 - 📤 Excel (müşteri şemasında), geçmiş, TR/EN arayüz
+
+## Öğrenme döngüsü
+
+Metriq'in çekirdek iddiası metraj çıkarmak değil, **müşteri konvansiyonunu öğrenmektir**. Aynı model iki müşteride iki farklı doğru MTO üretir (çelik tesis ↔ hijyenik gıda hattı); bu farklar koda gömülü değildir — bildirimsel `CalibrationRules` verisidir (`src/lib/types.ts`) ve tek noktadan uygulanır (`applyRules`, `src/lib/vocab.ts`).
+
+Döngü şöyle işler: kullanıcı MTO tablosunda bir satırı düzeltir/ekler/siler → her düzeltme `before/after/context` alanlı bir **`learning_event`** olarak kayda geçer → olay desenleri kural alanlarına eşlenir (ör. tüm 45 BEND'ler 90'a çevriliyorsa → `merge45Into90`; FLANGE satırları vana yanında hep siliniyorsa → `excludeCompanionFlanges`) → sistem bir **kalibrasyon önerisi** üretir → kullanıcı onaylar → yeni kural seti sonraki çalıştırmalarda otomatik uygulanır. Hiçbir kural onaysız değişmez.
+
+Aynı olay kayıtları **JSONL** formatında (olay başına tek satır JSON) doğrudan eğitim verisidir: `girdi = context + before`, `hedef = after`. Bu sayede birikim ileride few-shot örnekleri veya fine-tune seti olarak sıfır dönüşümle kullanılabilir. Sözleşmenin tamamı: `docs/02-learning.md`.
+
+## Dokümantasyon (`docs/`)
+
+| Dosya | İçerik |
+|---|---|
+| [`docs/00-overview.md`](docs/00-overview.md) | Mimari (10 satır) + öğrenme döngüsü diyagramı |
+| [`docs/01-methodology.md`](docs/01-methodology.md) | NWD metraj metodolojisi: OD-çifti, GUID-dedup, vokabüler profilleri, çapraz kontroller |
+| [`docs/02-learning.md`](docs/02-learning.md) | **Öğrenme sözleşmesi**: `learning_events` şeması, kural türetme rehberi, JSONL ihracı |
+| [`docs/03-decisions.md`](docs/03-decisions.md) | Karar günlüğü (ADR-lite) + yeni karar şablonu |
+| [`docs/04-calibration-log.md`](docs/04-calibration-log.md) | 3 gerçek vakanın kalibrasyon karnesi + yeni vaka şablonu |
+
+Drift kuralı: dokümanlardaki alan/dosya adları koddan (`src/lib/types.ts`) birebirdir; şema değişikliği doküman + migration ile **birlikte** yapılır.
 
 ## Kurulum (5 dakika)
 1. **Supabase** → yeni proje aç → SQL Editor'de `supabase/migration.sql`'i çalıştır → Storage'da **private** `models` bucket'ı oluştur.
@@ -20,4 +40,4 @@ Motor, üç gerçek proje dosyasıyla kalem-kalem kalibre edildi (bir vakada mü
 Vercel'e bağlıyken: `vercel --prod`. Env değişkenlerini Vercel'e ekle (`vercel env add`).
 
 ## Mimari
-Next.js App Router (Node runtime) · Supabase (DB+Storage, servis rolü yalnız sunucuda) · exceljs · saf-TS NWD parser (`src/lib/parser/`) — regresyon testleri gerçek dosyalarla.
+Next.js App Router (Node runtime) · Supabase (DB+Storage, servis rolü yalnız sunucuda) · exceljs · saf-TS NWD parser (`src/lib/parser/`) — regresyon testleri gerçek dosyalarla. Ayrıntı: `docs/00-overview.md`.

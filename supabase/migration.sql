@@ -51,3 +51,36 @@ create table if not exists calibrations (
 
 -- Depolama: 'models' adlı PRIVATE bucket oluştur (Dashboard > Storage > New bucket).
 -- Servis rolü kullanıldığı için ek policy gerekmiyor (RLS bypass).
+
+-- ===== v2: canlı işleme + AI denetçi + bildirimler + öğrenme günlüğü =====
+alter table runs add column if not exists progress jsonb not null default '[]';
+alter table runs add column if not exists ai jsonb;
+
+create table if not exists notifications (
+  id uuid primary key,
+  kind text not null default 'system',
+  title text not null,
+  body text not null default '',
+  url text not null default '/',
+  read boolean not null default false,
+  created_at timestamptz not null default now()
+);
+create index if not exists notifications_created on notifications(created_at desc);
+
+create table if not exists learning_events (
+  id uuid primary key,
+  run_id uuid,
+  ts timestamptz not null default now(),
+  kind text not null,
+  before jsonb,
+  after jsonb,
+  context jsonb not null default '{}'
+);
+create index if not exists learning_events_run on learning_events(run_id);
+create index if not exists learning_events_ts on learning_events(ts desc);
+
+create table if not exists push_subscriptions (
+  endpoint text primary key,
+  subscription jsonb not null,
+  created_at timestamptz not null default now()
+);

@@ -96,6 +96,40 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
         <span className="ml-auto">{t(lang, 'net_note')}</span>
       </div>
 
+      {/* AI denetçi bulguları */}
+      {run.ai && (
+        <div className="rise rise-2 panel panel-corners px-5 py-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[12px] font-semibold uppercase tracking-wider text-copper">
+              ⛨ {lang === 'tr' ? 'AI Denetçi' : 'AI Auditor'}
+            </span>
+            <span className="chip font-data">{run.ai.model.replace('claude-', '')}</span>
+            <span className="chip font-data">{lang === 'tr' ? 'komplexity' : 'complexity'} {run.ai.complexity}/100 · {run.ai.tier}</span>
+            {run.ai.findings.length === 0 && (
+              <span className="chip"><span className="chip-dot bg-mint" />{lang === 'tr' ? 'bulgu yok' : 'no findings'}</span>
+            )}
+          </div>
+          {run.ai.summary && <p className="mt-2.5 text-[13px] leading-relaxed text-muted">{run.ai.summary}</p>}
+          {run.ai.findings.length > 0 && (
+            <ul className="mt-3 space-y-1.5">
+              {run.ai.findings.map((f, i) => (
+                <li key={i} className="flex items-start gap-2 text-[12.5px] leading-snug">
+                  <span className="chip-dot mt-1.5 shrink-0" style={{
+                    background: f.severity === 'critical' ? 'var(--color-danger)' : f.severity === 'warn' ? 'var(--color-copper)' : 'var(--color-steel)',
+                  }} />
+                  <span className={f.severity === 'critical' ? 'text-danger' : ''}>{f.message}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="mt-2.5 font-data text-[10px] text-muted">
+            {lang === 'tr'
+              ? 'AI yalnız işaretler; rakamlar deterministik motordan gelir. Bulguları kontrol edip satırları düzenleyebilirsin — düzeltmelerin sistemi eğitir.'
+              : 'AI only flags; numbers come from the deterministic engine. Review findings and edit rows — your corrections train the system.'}
+          </p>
+        </div>
+      )}
+
       {/* sekmeler + filtreler */}
       <div className="rise rise-3 flex flex-wrap items-center gap-2">
         {([['rows', t(lang, 'run_rows'), main.length], ['steel', t(lang, 'run_steel'), steel.length], ['info', t(lang, 'run_info'), info.length]] as [Tab, string, number][]).map(([k, label, n]) => (

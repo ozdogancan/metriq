@@ -52,7 +52,7 @@ export async function saveRun(run: Run): Promise<void> {
     const { error } = await client().from('runs').upsert({
       id: run.id, project_name: run.projectName, file_name: run.fileName, file_size: run.fileSize,
       vocab: run.vocab, calibration_id: run.calibrationId, status: run.status, error: run.error ?? null,
-      totals: run.totals, fasteners: run.fasteners, created_at: run.createdAt,
+      totals: run.totals, fasteners: run.fasteners, progress: run.progress ?? [], ai: run.ai ?? null, created_at: run.createdAt,
     });
     if (error) throw error;
     return;
@@ -200,6 +200,114 @@ function dbRun(r: Record<string, unknown>): Run {
     fileSize: Number(r.file_size), vocab: r.vocab as Run['vocab'], calibrationId: r.calibration_id as string | null,
     status: r.status as Run['status'], error: (r.error as string) ?? undefined,
     totals: r.totals as Run['totals'], fasteners: r.fasteners as Run['fasteners'],
+    progress: (r.progress as Run['progress']) ?? [], ai: (r.ai as Run['ai']) ?? null,
     createdAt: r.created_at as string,
   };
+}
+
+// ---------- Çalışma ilerlemesi + AI (v2) ----------
+export async function updateRunMeta(runId: string, patch: { progress?: import('./types').StageEvent[]; ai?: import('./types').AiAudit | null; status?: Run['status']; error?: string; totals?: Run['totals'] }): Promise<void> {
+  if (isSupabase) {
+    const db: Record<string, unknown> = {};
+    if (patch.progress !== undefined) db.progress = patch.progress;
+    if (patch.ai !== undefined) db.ai = patch.ai;
+    if (patch.status !== undefined) db.status = patch.status;
+    if (patch.error !== undefined) db.error = patch.error;
+    if (patch.totals !== undefined) db.totals = patch.totals;
+    const { error } = await client().from('runs').update(db).eq('id', runId);
+    if (error) throw error;
+    return;
+  }
+  const runs = await readJson<Run[]>('runs.json', []);
+  const i = runs.findIndex(r => r.id === runId);
+  if (i >= 0) { runs[i] = { ...runs[i], ...patch }; await writeJson('runs.json', runs); }
+}
+
+// ---------- Bildirimler ----------
+import type { AppNotification, LearningEvent } from './types';
+
+export async function listNotifications(limit = 30): Promise<AppNotification[]> {
+  if (isSupabase) {
+    const { data } = await client().from('notifications').select('*').order('created_at', { ascending: false }).limit(limit);
+    return (data ?? []).map((r: Record<string, unknown>) => ({
+      id: r.id as string, kind: r.kind as AppNotification['kind'], title: r.title as string,
+      body: (r.body as string) ?? '', url: (r.url as string) ?? '/', read: Boolean(r.read), createdAt: r.created_at as string,
+    }));
+  }
+  const all = await readJson<AppNotification[]>('notifications.json', []);
+  return all.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, limit);
+}
+
+export async function addNotification(n: AppNotification): Promise<void> {
+  if (isSupabase) {
+    await client().from('notifications').insert({
+      id: n.id, kind: n.kind, title: n.title, body: n.body, url: n.url, read: n.read, created_at: n.createdAt,
+    });
+    return;
+  }
+  const all = await readJson<AppNotification[]>('notifications.json', []);
+  all.push(n);
+  await writeJson('notifications.json', all.slice(-200));
+}
+
+export async function markNotificationsRead(ids: string[] | 'all'): Promise<void> {
+  if (isSupabase) {
+    const q = client().from('notifications').update({ read: true });
+    if (ids === 'all') await q.eq('read', false); else await q.in('id', ids);
+    return;
+  }
+  const all = await readJson<AppNotification[]>('notifications.json', []);
+  for (const n of all) if (ids === 'all' || ids.includes(n.id)) n.read = true;
+  await writeJson('notifications.json', all);
+}
+
+// ---------- Öğrenme günlüğü (ML-uyumlu) ----------
+export async function addLearningEvents(events: LearningEvent[]): Promise<void> {
+  if (!events.length) return;
+  if (isSupabase) {
+    await client().from('learning_events').insert(events.map(e => ({
+      id: e.id, run_id: e.runId, ts: e.ts, kind: e.kind, before: e.before, after: e.after, context: e.context,
+    })));
+    return;
+  }
+  const all = await readJson<LearningEvent[]>('learning-events.json', []);
+  all.push(...events);
+  await writeJson('learning-events.json', all);
+}
+
+export async function listLearningEvents(limit = 500): Promise<LearningEvent[]> {
+  if (isSupabase) {
+    const { data } = await client().from('learning_events').select('*').order('ts', { ascending: false }).limit(limit);
+    return (data ?? []).map((r: Record<string, unknown>) => ({
+      id: r.id as string, runId: r.run_id as string, ts: r.ts as string, kind: r.kind as LearningEvent['kind'],
+      before: r.before as LearningEvent['before'], after: r.after as LearningEvent['after'],
+      context: r.context as LearningEvent['context'],
+    }));
+  }
+  return (await readJson<LearningEvent[]>('learning-events.json', [])).slice(-limit).reverse();
+}
+
+// ---------- Web Push abonelikleri ----------
+export async function addPushSubscription(sub: { endpoint: string; keys: Record<string, string> }): Promise<void> {
+  if (isSupabase) {
+    await client().from('push_subscriptions').upsert({ endpoint: sub.endpoint, subscription: sub });
+    return;
+  }
+  const all = await readJson<Record<string, unknown>[]>('push-subs.json', []);
+  if (!all.some(s => (s as { endpoint?: string }).endpoint === sub.endpoint)) all.push(sub);
+  await writeJson('push-subs.json', all);
+}
+
+export async function listPushSubscriptions(): Promise<{ endpoint: string; keys: Record<string, string> }[]> {
+  if (isSupabase) {
+    const { data } = await client().from('push_subscriptions').select('subscription');
+    return (data ?? []).map((r: Record<string, unknown>) => r.subscription as { endpoint: string; keys: Record<string, string> });
+  }
+  return readJson('push-subs.json', []);
+}
+
+export async function removePushSubscription(endpoint: string): Promise<void> {
+  if (isSupabase) { await client().from('push_subscriptions').delete().eq('endpoint', endpoint); return; }
+  const all = await readJson<{ endpoint: string }[]>('push-subs.json', []);
+  await writeJson('push-subs.json', all.filter(s => s.endpoint !== endpoint));
 }

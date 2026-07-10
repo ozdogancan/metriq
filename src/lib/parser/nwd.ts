@@ -1,6 +1,7 @@
-// Metriq — NWD parser sözleşmesi.
-// Gerçek implementasyon: TS portu (dwg-takeoff/nwd_mto3.py'den, 3 vakayla regresyon-testli).
-// Bu dosya ajan teslimiyle değiştirilir; sözleşme sabittir.
+// Metriq — NWD parser sözleşmesi + çekirdek adaptörü.
+// Çekirdek: nwd-core.ts (dwg-takeoff/nwd_mto3.py'nin TS portu; 26010+26113 vakalarında
+// 54/54 regresyon doğrulamalı). Bu dosya çekirdek çıktısını platform sözleşmesine uyarlar.
+import { parseNwd as coreParse } from './nwd-core';
 
 export interface ParsedComponent {
   klass: string;        // Pipe | Elbow | Flange | Valve | Tee | Reducer | ...
@@ -24,6 +25,27 @@ export interface ParseResult {
   stats: { blobCount: number; recordCount: number; uniqueComponents: number };
 }
 
-export function parseNwd(_buf: Buffer): ParseResult {
-  throw new Error('NWD parser henüz bağlanmadı (TS portu entegre edilecek)');
+export function parseNwd(buf: Buffer): ParseResult {
+  const r = coreParse(buf);
+  return {
+    components: r.components.map(c => ({
+      klass: c.klass,
+      guid: c.guid,
+      line: c.line,
+      lineGuessed: c.lineGuessed,
+      desc: c.desc,
+      sub: c.sub,
+      s1: c.s1,
+      s2: c.s2,
+      lengthMm: c.unit === 'M' ? Math.round(c.qty * 1000) : 0,
+      metric: c.metric,
+    })),
+    steelMembers: r.steelMembers,
+    fasteners: r.fasteners,
+    stats: {
+      blobCount: r.stats.blobs,
+      recordCount: r.stats.records,
+      uniqueComponents: r.stats.uniqueComponents,
+    },
+  };
 }
