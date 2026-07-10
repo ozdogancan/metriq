@@ -8,7 +8,7 @@ import {
 } from '@tanstack/react-table';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { t, type Lang } from '@/lib/i18n';
-import type { Calibration, MtoRow, Run, SteelRow } from '@/lib/types';
+import type { AnswerDiff, Calibration, MtoRow, Run, SteelRow } from '@/lib/types';
 
 type Tab = 'rows' | 'steel' | 'info';
 
@@ -61,6 +61,9 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [calName, setCalName] = useState('');
+  const [answer, setAnswer] = useState<AnswerDiff | null>(run.answer ?? null);
+  const [answerBusy, setAnswerBusy] = useState(false);
+  const answerFileRef = useRef<HTMLInputElement>(null);
 
   const tr = lang === 'tr';
 
@@ -121,6 +124,26 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
       setSaving('idle');
       toast.error((tr ? 'Kaydedilemedi: ' : 'Save failed: ') + (e instanceof Error ? e.message : ''));
       return false;
+    }
+  }
+
+  // müşteri cevap Excel'i: ground truth karşılaştırması ("bu dosyanın doğru cevabı bu")
+  async function uploadAnswer(file: File) {
+    setAnswerBusy(true);
+    try {
+      const fd = new FormData();
+      fd.set('file', file);
+      const res = await fetch(`/api/runs/${run.id}/answer`, { method: 'POST', body: fd });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
+      setAnswer(d.answer);
+      toast.success(tr
+        ? `Cevap karşılaştırıldı: %${d.answer.accuracy} eşleşme`
+        : `Answer compared: ${d.answer.accuracy}% match`);
+    } catch (e) {
+      toast.error((tr ? 'Karşılaştırılamadı: ' : 'Comparison failed: ') + (e instanceof Error ? e.message : ''));
+    } finally {
+      setAnswerBusy(false);
     }
   }
 
@@ -210,11 +233,20 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
             </button>
           )}
           {saving === 'saved' && <span className="chip"><span className="chip-dot bg-mint" />{t(lang, 'saved')}</span>}
+          <button onClick={() => answerFileRef.current?.click()} disabled={answerBusy} className="btn"
+            title={tr ? 'Müşterinin cevap Excel\'ini yükle — sonuçla karşılaştırılır' : 'Upload the client\'s answer Excel — compared against the result'}>
+            {answerBusy ? (tr ? 'Karşılaştırılıyor…' : 'Comparing…') : (tr ? '⇪ Cevapla karşılaştır' : '⇪ Compare with answer')}
+          </button>
+          <input ref={answerFileRef} type="file" accept=".xlsx" hidden
+            onChange={e => { const f = e.target.files?.[0]; if (f) uploadAnswer(f); e.target.value = ''; }} />
           <button onClick={downloadExcel} disabled={saving === 'saving'} className="btn btn-primary">
             ⤓ {t(lang, 'download_excel')}{dirty ? ' *' : ''}
           </button>
         </div>
       </div>
+
+      {/* cevap karşılaştırma karnesi */}
+      {answer && <AnswerPanel lang={lang} answer={answer} />}
 
       {/* özet kartları */}
       <div className="rise rise-1 grid grid-cols-2 gap-3 sm:grid-cols-5">
@@ -509,6 +541,75 @@ function MtoTable({ lang, rows, onEdit, onRemove, emptyMsg }: {
           )}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// ---- cevap karşılaştırma karnesi: müşteri Excel'i = ground truth ----
+const ANSWER_STATUS: Record<string, { tr: string; en: string; color: string }> = {
+  missing: { tr: 'bizde eksik', en: 'missing in ours', color: 'var(--color-danger)' },
+  qty_diff: { tr: 'miktar farkı', en: 'qty differs', color: 'var(--color-copper)' },
+  extra: { tr: 'bizde fazla', en: 'extra in ours', color: 'var(--color-steel)' },
+  match: { tr: 'eşleşti', en: 'matched', color: 'var(--color-mint)' },
+};
+
+function AnswerPanel({ lang, answer }: { lang: Lang; answer: AnswerDiff }) {
+  const tr = lang === 'tr';
+  const [showAll, setShowAll] = useState(false);
+  const problems = answer.rows.filter(r => r.status !== 'match');
+  const shown = showAll ? problems : problems.slice(0, 12);
+  const accColor = answer.accuracy >= 95 ? 'var(--color-mint)' : answer.accuracy >= 80 ? 'var(--color-copper-bright)' : 'var(--color-danger)';
+  return (
+    <div className="rise rise-1 panel panel-corners px-5 py-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="text-[12px] font-semibold uppercase tracking-wider text-copper">
+          ⇪ {tr ? 'Cevap karşılaştırması' : 'Answer comparison'}
+        </span>
+        <span className="num text-[22px] font-bold" style={{ color: accColor }}>%{answer.accuracy}</span>
+        <span className="chip"><span className="chip-dot" style={{ background: 'var(--color-mint)' }} />{answer.counts.matched} {tr ? 'eşleşti' : 'matched'}</span>
+        {answer.counts.qtyDiff > 0 && <span className="chip"><span className="chip-dot" style={{ background: 'var(--color-copper)' }} />{answer.counts.qtyDiff} {tr ? 'miktar farkı' : 'qty diff'}</span>}
+        {answer.counts.missing > 0 && <span className="chip"><span className="chip-dot" style={{ background: 'var(--color-danger)' }} />{answer.counts.missing} {tr ? 'bizde eksik' : 'missing'}</span>}
+        {answer.counts.extra > 0 && <span className="chip"><span className="chip-dot" style={{ background: 'var(--color-steel)' }} />{answer.counts.extra} {tr ? 'bizde fazla' : 'extra'}</span>}
+        <span className="ml-auto font-data text-[10px] text-muted">{answer.fileName}</span>
+      </div>
+      {problems.length > 0 && (
+        <div className="mt-3 overflow-auto">
+          <table className="mtable">
+            <thead>
+              <tr>
+                <th>{tr ? 'durum' : 'status'}</th><th>{tr ? 'kod' : 'code'}</th>
+                <th className="!text-right">{tr ? 'çap' : 'size'}</th>
+                <th className="!text-right">{tr ? 'biz' : 'ours'}</th>
+                <th className="!text-right">{tr ? 'cevap' : 'answer'}</th>
+              </tr>
+            </thead>
+            <tbody className="font-data">
+              {shown.map((r, i) => {
+                const s = ANSWER_STATUS[r.status];
+                return (
+                  <tr key={i}>
+                    <td><span className="chip text-[10.5px]"><span className="chip-dot" style={{ background: s.color }} />{tr ? s.tr : s.en}</span></td>
+                    <td>{r.code}</td>
+                    <td className="num !text-right">{r.s1 ?? '?'}{r.s2 ? `x${r.s2}` : ''}″ {r.unit}</td>
+                    <td className="num !text-right">{r.ours}</td>
+                    <td className="num !text-right">{r.answer}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {problems.length > 12 && (
+            <button onClick={() => setShowAll(v => !v)} className="btn btn-ghost mt-2 !text-[11px]">
+              {showAll ? (tr ? 'daralt' : 'collapse') : `${problems.length - 12} ${tr ? 'satır daha göster' : 'more rows'}`}
+            </button>
+          )}
+        </div>
+      )}
+      <p className="mt-2.5 font-data text-[10px] text-muted">
+        {tr
+          ? 'Karşılaştırma yalnız ölçer — rakamlarına dokunmaz. Farklı satırları ekranda düzeltip "Kalibrasyon olarak kaydet" dersen sistem bu müşteriyi öğrenir.'
+          : 'Comparison only measures — it never changes your numbers. Fix differing rows on screen and "Save as calibration" to teach the system this client.'}
+      </p>
     </div>
   );
 }

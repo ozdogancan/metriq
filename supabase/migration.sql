@@ -84,3 +84,6 @@ create table if not exists push_subscriptions (
   subscription jsonb not null,
   created_at timestamptz not null default now()
 );
+
+-- ===== v3: müşteri cevap karşılaştırması (ground truth) =====
+alter table runs add column if not exists answer jsonb;

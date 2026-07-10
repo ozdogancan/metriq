@@ -63,7 +63,8 @@ export async function saveRun(run: Run): Promise<void> {
     const { error } = await client().from('runs').upsert({
       id: run.id, project_name: run.projectName, file_name: run.fileName, file_size: run.fileSize,
       vocab: run.vocab, calibration_id: run.calibrationId, status: run.status, error: run.error ?? null,
-      totals: run.totals, fasteners: run.fasteners, progress: run.progress ?? [], ai: run.ai ?? null, created_at: run.createdAt,
+      totals: run.totals, fasteners: run.fasteners, progress: run.progress ?? [], ai: run.ai ?? null,
+      answer: run.answer ?? null, created_at: run.createdAt,
     });
     if (error) throw error;
     return;
@@ -226,12 +227,13 @@ function dbRun(r: Record<string, unknown>): Run {
     status: r.status as Run['status'], error: (r.error as string) ?? undefined,
     totals: r.totals as Run['totals'], fasteners: r.fasteners as Run['fasteners'],
     progress: (r.progress as Run['progress']) ?? [], ai: (r.ai as Run['ai']) ?? null,
+    answer: (r.answer as Run['answer']) ?? null,
     createdAt: r.created_at as string,
   };
 }
 
 // ---------- Çalışma ilerlemesi + AI (v2) ----------
-export async function updateRunMeta(runId: string, patch: { progress?: import('./types').StageEvent[]; ai?: import('./types').AiAudit | null; status?: Run['status']; error?: string; totals?: Run['totals']; fasteners?: Run['fasteners']; vocab?: Run['vocab'] }): Promise<void> {
+export async function updateRunMeta(runId: string, patch: { progress?: import('./types').StageEvent[]; ai?: import('./types').AiAudit | null; status?: Run['status']; error?: string; totals?: Run['totals']; fasteners?: Run['fasteners']; vocab?: Run['vocab']; answer?: Run['answer'] }): Promise<void> {
   if (isSupabase) {
     const db: Record<string, unknown> = {};
     if (patch.progress !== undefined) db.progress = patch.progress;
@@ -241,6 +243,7 @@ export async function updateRunMeta(runId: string, patch: { progress?: import('.
     if (patch.totals !== undefined) db.totals = patch.totals;
     if (patch.fasteners !== undefined) db.fasteners = patch.fasteners;
     if (patch.vocab !== undefined) db.vocab = patch.vocab;
+    if (patch.answer !== undefined) db.answer = patch.answer;
     const { error } = await client().from('runs').update(db).eq('id', runId);
     if (error) throw error;
     return;

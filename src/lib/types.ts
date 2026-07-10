@@ -46,6 +46,27 @@ export interface Run {
   fasteners: { gaskets: number; boltSets: number; stubEnds: number };
   progress?: StageEvent[];
   ai?: AiAudit | null;
+  answer?: AnswerDiff | null; // müşteri cevap Excel'i karşılaştırması (ground truth)
+  createdAt: string;
+}
+
+// ---------- Cevap karşılaştırması (müşteri Excel'i = ground truth) ----------
+export type AnswerRowStatus = 'match' | 'qty_diff' | 'missing' | 'extra';
+export interface AnswerDiffRow {
+  status: AnswerRowStatus;
+  code: string;
+  s1: number | null;
+  s2: number;
+  unit: Unit;
+  ours: number;    // bizim miktar (0 = bizde yok)
+  answer: number;  // cevaptaki miktar (0 = cevapta yok)
+}
+export interface AnswerDiff {
+  fileName: string;
+  sheet: string;
+  accuracy: number;              // eşleşen anahtar / cevaptaki anahtar (%)
+  counts: { matched: number; qtyDiff: number; missing: number; extra: number };
+  rows: AnswerDiffRow[];         // en fazla 200 satır (önce sorunlar)
   createdAt: string;
 }
 
@@ -139,7 +160,8 @@ export interface LearningEvent {
   runId: string;
   ts: string;
   kind: 'row_edit' | 'row_add' | 'row_delete' | 'calibration_saved' | 'run_feedback';
-  before: Partial<MtoRow> | null;
-  after: Partial<MtoRow> | null;
+  // row_* olaylarında Partial<MtoRow>; calibration_saved'da kurallar; run_feedback'te karne özeti
+  before: Partial<MtoRow> | Record<string, unknown> | null;
+  after: Partial<MtoRow> | Record<string, unknown> | null;
   context: { vocab: string; fileName?: string; calibrationId?: string | null };
 }

@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { t, type Lang, type TKey } from '@/lib/i18n';
-import { DEFAULT_RULES, type Calibration, type CalibrationRules, type VocabProfileId } from '@/lib/types';
+import type { Calibration, CalibrationRules } from '@/lib/types';
 
 export function CalibrationsPanel({ lang, initial }: { lang: Lang; initial: Calibration[] }) {
   const router = useRouter();
@@ -27,49 +27,30 @@ export function CalibrationsPanel({ lang, initial }: { lang: Lang; initial: Cali
     router.refresh();
   }
 
-  function addNew(vocab: VocabProfileId) {
-    const now = new Date().toISOString();
-    const cal: Calibration = {
-      id: crypto.randomUUID(),
-      name: vocab === 'hygienic' ? t(lang, 'cal_default_hygienic') : t(lang, 'cal_default_steel'),
-      rules: { ...DEFAULT_RULES[vocab], codeRenames: {} },
-      learnedFrom: [], createdAt: now, updatedAt: now,
-    };
-    setCals(prev => [cal, ...prev]);
-    setOpenId(cal.id);
-  }
-
   const tr = lang === 'tr';
   return (
     <div className="space-y-4">
-      {/* Kalibrasyonun ne olduğu ilk bakışta anlaşılmalı */}
+      {/* Kalibrasyon = müşteri hafızası; profiller jargondan değil gerçek metrajlardan doğar */}
       <div className="rise panel panel-corners px-5 py-4">
         <div className="text-[12px] font-semibold uppercase tracking-wider text-copper">
-          {tr ? '◈ Kalibrasyon nedir?' : '◈ What is a calibration?'}
+          {tr ? '◈ Kalibrasyon = müşteri hafızası' : '◈ Calibration = client memory'}
         </div>
         <p className="mt-2 text-[13px] leading-relaxed text-muted">
           {tr
-            ? 'Her müşteri metrajı farklı sayar: kimi 45° dirseği 90°\'a katar, kimi vana saymaz, kimi refakat flanşını hariç tutar. Kalibrasyon, bir müşterinin bu sayım alışkanlıklarının kayıtlı profilidir.'
-            : 'Every client counts differently: some fold 45° elbows into 90°, some exclude valves, some skip companion flanges. A calibration is the saved profile of one client\'s counting conventions.'}
+            ? 'Her müşteri metrajı biraz farklı sayar (kimi vanayı listeye almaz, kimi bazı hatları kapsam dışı tutar). Buradaki profiller o alışkanlıkların hafızasıdır — elle oluşturulmaz, gerçek metrajlardan doğar:'
+            : 'Every client counts slightly differently (some skip valves, some keep certain lines out of scope). Profiles here are the memory of those habits — they aren\'t created by hand, they are born from real take-offs:'}
         </p>
         <ol className="mt-2.5 space-y-1 text-[12.5px] leading-relaxed text-muted">
-          <li><span className="font-data text-copper-bright">1.</span> {tr ? 'Metraj sonucunu incele, gerekirse satırları elle düzelt.' : 'Review a take-off; correct rows by hand if needed.'}</li>
-          <li><span className="font-data text-copper-bright">2.</span> {tr ? 'Metraj sayfasının altındaki "Kalibrasyon olarak kaydet" ile düzeltmelerini profile işle.' : 'Use "Save as calibration" at the bottom of the take-off page to fold your corrections into a profile.'}</li>
-          <li><span className="font-data text-copper-bright">3.</span> {tr ? 'Sonraki yüklemede bu profili seç — aynı müşteri için kurallar otomatik uygulanır.' : 'Pick that profile on the next upload — the client\'s rules apply automatically.'}</li>
+          <li><span className="font-data text-copper-bright">1.</span> {tr ? 'Dosyayı yükle — tesisat tipi otomatik algılanır, sonuç saniyeler içinde gelir.' : 'Upload the file — system type is auto-detected, results arrive in seconds.'}</li>
+          <li><span className="font-data text-copper-bright">2.</span> {tr ? 'Doğrula — istersen müşterinin cevap Excel\'ini "⇪ Cevapla karşılaştır" ile yükle, farkları gör; gerekirse satırları ekranda düzelt.' : 'Verify — optionally upload the client\'s answer Excel via "⇪ Compare with answer" to see differences; fix rows on screen if needed.'}</li>
+          <li><span className="font-data text-copper-bright">3.</span> {tr ? '"Kalibrasyon olarak kaydet" — düzeltmelerin (kod adları + kapsam-dışı hatlar) bu sayfadaki profile işlenir ve o müşterinin sonraki dosyasında otomatik uygulanır.' : '"Save as calibration" — your corrections (code names + excluded lines) are folded into a profile here and applied automatically to that client\'s next file.'}</li>
         </ol>
-        <p className="mt-2.5 font-data text-[11px] text-muted/80">
-          {tr
-            ? 'Aşağıdaki anahtarlarla kuralları elle de ayarlayabilirsin; genelde gerek kalmaz.'
-            : 'You can also tune the rules manually below; usually unnecessary.'}
-        </p>
-      </div>
-      <div className="rise flex gap-2">
-        <button className="btn btn-primary" onClick={() => addNew('steel-plant')}>+ {t(lang, 'vocab_steel')}</button>
-        <button className="btn" onClick={() => addNew('hygienic')}>+ {t(lang, 'vocab_hygienic')}</button>
       </div>
       {cals.length === 0 && (
         <div className="panel panel-corners rise px-6 py-10 text-center text-[13px] text-muted">
-          {lang === 'tr' ? 'Henüz kalibrasyon yok. Bir metrajı düzenleyip "Kalibrasyon olarak kaydet" de diyebilirsin.' : 'No calibrations yet. You can also edit a takeoff and "Save as calibration".'}
+          {lang === 'tr'
+            ? 'Henüz öğrenilmiş profil yok. İlk metrajını yükle, gerekirse düzelt ve "Kalibrasyon olarak kaydet" de — profil burada belirecek.'
+            : 'No learned profiles yet. Upload your first take-off, correct if needed, and "Save as calibration" — the profile will appear here.'}
         </div>
       )}
       {cals.map((cal, i) => (
