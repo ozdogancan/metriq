@@ -31,7 +31,7 @@ export function CalibrationsPanel({ lang, initial }: { lang: Lang; initial: Cali
     const now = new Date().toISOString();
     const cal: Calibration = {
       id: crypto.randomUUID(),
-      name: vocab === 'hygienic' ? 'Hijyenik profil' : 'Çelik tesisat profili',
+      name: vocab === 'hygienic' ? t(lang, 'cal_default_hygienic') : t(lang, 'cal_default_steel'),
       rules: { ...DEFAULT_RULES[vocab], codeRenames: {} },
       learnedFrom: [], createdAt: now, updatedAt: now,
     };
@@ -100,7 +100,7 @@ function RulesEditor({ lang, cal, onChange }: { lang: Lang; cal: Calibration; on
         {toggles.map(([k, label]) => (
           <label key={k} className="flex cursor-pointer items-center gap-3 rounded-lg border border-line px-3.5 py-2.5 text-[12.5px] hover:border-copper/35 transition-colors">
             <input type="checkbox" checked={Boolean(r[k])} onChange={e => set(k, e.target.checked as never)}
-              className="h-4 w-4 accent-[#d08a45]" />
+              className="h-4 w-4 accent-[var(--color-copper)]" />
             {t(lang, label)}
           </label>
         ))}

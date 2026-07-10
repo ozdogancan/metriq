@@ -13,7 +13,7 @@ export default async function LoginPage() {
     <div className="grid min-h-screen lg:grid-cols-[1fr_minmax(420px,44%)]">
       {/* sol: hero görsel (mobilde gizli) */}
       <div className="relative hidden overflow-hidden lg:block">
-        <Image src="/login-hero.png" alt="" fill priority sizes="60vw"
+        <Image src="/login-hero.jpg" alt="" fill priority sizes="60vw"
           className="object-cover object-center" />
         <div className="absolute inset-0 bg-gradient-to-r from-transparent via-transparent to-bg" />
         <div className="absolute bottom-8 left-8 right-16">

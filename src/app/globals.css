@@ -28,6 +28,9 @@
   --btn-hover-bg: #1a2029;
   --ghost-hover-bg: rgba(255, 255, 255, 0.03);
   --scroll-thumb: #2a3140;
+  /* bakır türevleri: yarı saydam kenarlık + ışıma (tema-duyarlı) */
+  --copper-soft: rgba(208, 138, 69, 0.55);
+  --copper-glow: rgba(208, 138, 69, 0.14);
 }
 
 /* ── açık tema: sıcak teknik-kağıt ── */
@@ -39,8 +42,8 @@ html[data-theme='light'] {
   --color-ink: #21252d;
   --color-muted: #66707f;
   --color-line: rgba(24, 28, 38, 0.13);
-  --color-copper: #b06f2e;
-  --color-copper-bright: #9a5a1e;
+  --color-copper: #a05a1a;        /* açık zeminde küçük metin ≥4.5:1 */
+  --color-copper-bright: #8a4d12; /* açık temada "parlak" = daha koyu vurgu */
   --color-steel: #41678c;
   --color-mint: #2f7d59;
   --color-danger: #b3554c;
@@ -53,6 +56,8 @@ html[data-theme='light'] {
   --btn-hover-bg: #efece5;
   --ghost-hover-bg: rgba(24, 28, 38, 0.04);
   --scroll-thumb: #c9c4b8;
+  --copper-soft: rgba(160, 90, 26, 0.55);
+  --copper-glow: rgba(160, 90, 26, 0.16);
 }
 
 body {
@@ -133,13 +138,23 @@ body {
 .btn:hover { border-color: rgba(208, 138, 69, 0.5); background: var(--btn-hover-bg); }
 .btn:disabled { opacity: 0.45; cursor: default; }
 .btn-primary {
-  background: linear-gradient(135deg, #c07c39, #a5652c);
+  /* koyu bakır zemin: #fff7ee metinle ≥4.5:1 kontrast (açık uç #9c5f26 ≈ 4.85:1) */
+  background: linear-gradient(135deg, #9c5f26, #7e4a1d);
   border-color: rgba(234, 164, 92, 0.5); color: #fff7ee;
-  box-shadow: 0 2px 14px rgba(192, 124, 57, 0.25);
+  box-shadow: 0 2px 14px rgba(156, 95, 38, 0.25);
 }
-.btn-primary:hover { background: linear-gradient(135deg, #d08a45, #b06f31); border-color: var(--color-copper-bright); }
+.btn-primary:hover { background: linear-gradient(135deg, #a2632a, #855020); border-color: var(--color-copper-bright); }
 .btn-ghost { background: transparent; border-color: transparent; color: var(--color-muted); }
 .btn-ghost:hover { color: var(--color-ink); border-color: var(--color-line); background: var(--ghost-hover-bg); }
+
+/* ── klavye odağı: outline-none/ince kenarlıkta kaybolan odak yerine görünür bakır hat ── */
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--color-copper);
+  outline-offset: 2px;
+}
 
 @keyframes riseIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 .rise { animation: riseIn 0.5s cubic-bezier(0.2, 0.7, 0.2, 1) both; }

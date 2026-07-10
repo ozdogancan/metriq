@@ -1,10 +1,23 @@
 'use client';
 import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { t, type Lang } from '@/lib/i18n';
+import { t, type Lang, type TKey } from '@/lib/i18n';
 import type { VocabProfileId } from '@/lib/types';
 
 interface CalOpt { id: string; name: string; vocab: VocabProfileId }
+
+// HTTP durum kodunu taşıyan hata — catch'te kullanıcı-dostu mesaja çevrilir
+class HttpError extends Error {
+  status: number;
+  constructor(status: number, message: string) { super(message); this.status = status; }
+}
+
+// Ham/teknik hataları kullanıcı-dostu i18n anahtarına eşle
+function errorKey(e: unknown): TKey {
+  if (e instanceof HttpError) return e.status === 413 ? 'err_file_too_large' : 'err_server';
+  if (e instanceof TypeError) return 'err_network'; // fetch ağ hatası
+  return 'err_server';
+}
 
 export function UploadZone({ lang, calibrations }: { lang: Lang; calibrations: CalOpt[] }) {
   const router = useRouter();
@@ -18,7 +31,7 @@ export function UploadZone({ lang, calibrations }: { lang: Lang; calibrations: C
 
   async function handleFile(file: File) {
     if (!file.name.toLowerCase().endsWith('.nwd')) {
-      setError(lang === 'tr' ? 'Şimdilik yalnızca .nwd dosyaları destekleniyor.' : 'Only .nwd files are supported for now.');
+      setError(t(lang, 'err_only_nwd'));
       return;
     }
     setBusy(true); setError('');
@@ -34,15 +47,15 @@ export function UploadZone({ lang, calibrations }: { lang: Lang; calibrations: C
           method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ fileName: file.name }),
         });
+        if (!s.ok) throw new HttpError(s.status, 'upload-url failed');
         const su = await s.json();
-        if (!s.ok) throw new Error(su.error || 'upload-url failed');
         if (su.mode === 'supabase') {
           const up = await fetch(su.uploadUrl, {
             method: 'PUT',
             headers: { 'content-type': 'application/octet-stream', authorization: `Bearer ${su.token}`, 'x-upsert': 'true' },
             body: file,
           });
-          if (!up.ok) throw new Error('storage upload failed: ' + (await up.text()).slice(0, 200));
+          if (!up.ok) throw new HttpError(up.status, 'storage upload failed');
           res = await fetch('/api/runs', {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ ...meta, storagePath: su.path, runId: su.runId, fileSize: file.size }),
@@ -54,12 +67,12 @@ export function UploadZone({ lang, calibrations }: { lang: Lang; calibrations: C
       } else {
         res = await postMultipart(file, meta);
       }
+      if (!res.ok) throw new HttpError(res.status, 'parse failed');
       const out = await res.json();
-      if (!res.ok) throw new Error(out.error || 'parse failed');
       router.push(`/runs/${out.id}`);
       router.refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(t(lang, errorKey(e)));
       setBusy(false);
     }
   }
@@ -114,8 +127,8 @@ export function UploadZone({ lang, calibrations }: { lang: Lang; calibrations: C
         ) : (
           <>
             <svg width="44" height="44" viewBox="0 0 44 44" className="opacity-80">
-              <rect x="4" y="10" width="36" height="26" rx="4" fill="none" stroke="#d08a45" strokeWidth="1.3" strokeDasharray="4 3" />
-              <path d="M22 28 V16 M22 16 l-5 5 M22 16 l5 5" stroke="#eaa45c" strokeWidth="1.8" strokeLinecap="round" fill="none" />
+              <rect x="4" y="10" width="36" height="26" rx="4" fill="none" stroke="var(--color-copper)" strokeWidth="1.3" strokeDasharray="4 3" />
+              <path d="M22 28 V16 M22 16 l-5 5 M22 16 l5 5" stroke="var(--color-copper-bright)" strokeWidth="1.8" strokeLinecap="round" fill="none" />
             </svg>
             <div className="text-[14px] font-semibold">{t(lang, 'upload_hint')}</div>
             <div className="font-data text-[11px] tracking-wider text-muted">.NWD · NAVISWORKS / PLANT 3D</div>

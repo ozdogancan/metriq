@@ -254,6 +254,19 @@ export async function updateRunMeta(runId: string, patch: { progress?: import('.
   if (i >= 0) { runs[i] = { ...runs[i], ...patch }; await writeJson('runs.json', runs); }
 }
 
+// ---------- Bayat işlem bekçisi (watchdog) ----------
+const STALE_PROCESSING_MS = 15 * 60 * 1000; // 15 dk
+
+// 15 dk'yı aşan 'processing' run'ı hataya çevirir (pipeline sessizce ölmüşse kullanıcı sonsuz beklemesin)
+export async function resolveStaleRun(run: Run): Promise<Run> {
+  if (run.status !== 'processing') return run;
+  const age = Date.now() - new Date(run.createdAt).getTime();
+  if (!Number.isFinite(age) || age <= STALE_PROCESSING_MS) return run;
+  const error = 'İşlem zaman aşımına uğradı (15 dk) — dosyayı yeniden yükleyin';
+  await updateRunMeta(run.id, { status: 'error', error });
+  return { ...run, status: 'error', error };
+}
+
 // ---------- Bildirimler ----------
 import type { AppNotification, LearningEvent } from './types';
 

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { AppNotification } from '@/lib/types';
-import type { Lang } from '@/lib/i18n';
+import { t, type Lang } from '@/lib/i18n';
 
 function timeAgo(iso: string, lang: Lang): string {
   const s = Math.max(1, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
@@ -28,6 +28,7 @@ export function NotificationsBell({ lang }: { lang: Lang }) {
   const [items, setItems] = useState<AppNotification[]>([]);
   const [unread, setUnread] = useState(0);
   const [pushState, setPushState] = useState<'unsupported' | 'off' | 'on' | 'denied'>('off');
+  const [pushErr, setPushErr] = useState('');
   const wrapRef = useRef<HTMLDivElement>(null);
 
   const refresh = useCallback(async () => {
@@ -42,8 +43,11 @@ export function NotificationsBell({ lang }: { lang: Lang }) {
 
   useEffect(() => {
     refresh();
-    const iv = setInterval(refresh, 25_000);
-    return () => clearInterval(iv);
+    // sekme gizliyken poll atlanır; görünür olunca hemen bir kez çekilir
+    const iv = setInterval(() => { if (!document.hidden) refresh(); }, 25_000);
+    const onVis = () => { if (!document.hidden) refresh(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => { clearInterval(iv); document.removeEventListener('visibilitychange', onVis); };
   }, [refresh]);
 
   // push durumu tespiti
@@ -59,13 +63,21 @@ export function NotificationsBell({ lang }: { lang: Lang }) {
     })();
   }, []);
 
-  // dışarı tıklayınca kapan
+  // dışarı tıklayınca / Escape ile kapan
   useEffect(() => {
+    if (!open) return;
     function onDoc(e: MouseEvent) {
       if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
     }
-    if (open) document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setOpen(false);
+    }
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
   }, [open]);
 
   async function toggleOpen() {
@@ -82,22 +94,27 @@ export function NotificationsBell({ lang }: { lang: Lang }) {
   }
 
   async function enablePush() {
+    setPushErr('');
     try {
       const perm = await Notification.requestPermission();
       if (perm !== 'granted') { setPushState(perm === 'denied' ? 'denied' : 'off'); return; }
       const reg = await navigator.serviceWorker.register('/sw.js');
       const key = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
-      if (!key) return;
+      if (!key) { setPushErr(t(lang, 'push_error')); return; }
       const sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: b64ToUint8(key) as BufferSource,
       });
-      await fetch('/api/push', {
+      const res = await fetch('/api/push', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ subscription: sub.toJSON() }),
       });
+      if (!res.ok) { setPushErr(t(lang, 'push_error')); return; }
       setPushState('on');
-    } catch { /* sessiz */ }
+    } catch {
+      // sessiz başarısızlık yerine panelde küçük hata metni
+      setPushErr(t(lang, 'push_error'));
+    }
   }
 
   const KIND_DOT: Record<string, string> = {
@@ -106,9 +123,10 @@ export function NotificationsBell({ lang }: { lang: Lang }) {
 
   return (
     <div className="relative" ref={wrapRef}>
-      <button onClick={toggleOpen} aria-label="notifications"
-        className={`btn btn-ghost !px-2.5 relative ${open ? '!text-ink !border-line' : ''}`}
-        title={lang === 'tr' ? 'Bildirimler' : 'Notifications'}>
+      <button onClick={toggleOpen}
+        aria-label={t(lang, 'notifications')} aria-haspopup="menu" aria-expanded={open}
+        className={`btn btn-ghost !px-2 sm:!px-2.5 relative ${open ? '!text-ink !border-line' : ''}`}
+        title={t(lang, 'notifications')}>
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
           <path d="M13.7 21a2 2 0 0 1-3.4 0" />
@@ -120,9 +138,10 @@ export function NotificationsBell({ lang }: { lang: Lang }) {
         )}
       </button>
       {open && (
-        <div className="panel panel-corners absolute right-0 top-11 z-30 w-[340px] overflow-hidden shadow-2xl shadow-black/30">
+        <div role="menu" aria-label={t(lang, 'notifications')}
+          className="panel panel-corners absolute right-0 top-11 z-30 w-[340px] overflow-hidden shadow-2xl shadow-black/30">
           <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
-            <span className="text-[12px] font-semibold">{lang === 'tr' ? 'Bildirimler' : 'Notifications'}</span>
+            <span className="text-[12px] font-semibold">{t(lang, 'notifications')}</span>
             {pushState !== 'unsupported' && (
               pushState === 'on' ? (
                 <span className="chip"><span className="chip-dot" style={{ background: 'var(--color-mint)' }} />{lang === 'tr' ? 'masaüstü açık' : 'desktop on'}</span>
@@ -135,6 +154,12 @@ export function NotificationsBell({ lang }: { lang: Lang }) {
               )
             )}
           </div>
+          {/* masaüstü bildirim açma başarısız olursa panelde küçük kırmızı metin */}
+          {pushErr && (
+            <div className="border-b border-line px-4 py-2 text-[11px] text-danger" role="alert">
+              {pushErr}
+            </div>
+          )}
           <div className="max-h-[380px] overflow-y-auto">
             {items.length === 0 && (
               <div className="px-4 py-8 text-center text-[12px] text-muted">
@@ -142,7 +167,7 @@ export function NotificationsBell({ lang }: { lang: Lang }) {
               </div>
             )}
             {items.map(n => (
-              <button key={n.id}
+              <button key={n.id} role="menuitem"
                 onClick={() => { setOpen(false); router.push(n.url); }}
                 className="flex w-full items-start gap-2.5 border-b border-line/50 px-4 py-3 text-left transition-colors last:border-0 hover:bg-copper/5">
                 <span className="chip-dot mt-1.5 shrink-0" style={{ background: KIND_DOT[n.kind] ?? 'var(--color-steel)' }} />

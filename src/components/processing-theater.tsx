@@ -148,7 +148,37 @@ const CALLOUT_POS: Record<StageKey, { left: string; top: string }> = {
   finalize: { left: '67%', top: '86%' },
 };
 
-const localeOf = (lang: Lang) => (lang === 'tr' ? 'tr-TR' : 'en-US');
+const localeOf = (lang: Lang) => (lang === 'tr' ? 'tr-TR' : 'en-GB');
+
+// ── Sunucudan Türkçe gelen metrik etiketleri — EN modda haritayla çevrilir ──
+// (sunucu payload'ı değişmez; bilinmeyen etiket olduğu gibi geçer)
+const METRIC_LABELS_EN: Record<string, string> = {
+  'veri akışı': 'data streams',
+  'kayıt': 'records',
+  'komponent': 'components',
+  'boyutlu': 'sized',
+  'hat': 'lines',
+  'satır': 'rows',
+  'boru m': 'pipe m',
+  'profil': 'profiles',
+  'kg': 'kg',
+  'seviye': 'level',
+  'kritik': 'critical',
+  'uyarı': 'warnings',
+  'durum': 'status',
+  'sn': 's',
+  'MB': 'MB',
+};
+// AI tier gibi Türkçe string DEĞERLER için EN karşılıklar
+const METRIC_VALUES_EN: Record<string, string> = {
+  'basit': 'simple',
+  'orta': 'moderate',
+  'karmaşık': 'complex',
+  'atlandı': 'skipped',
+};
+const metricLabel = (lang: Lang, k: string) => (lang === 'en' ? METRIC_LABELS_EN[k] ?? k : k);
+const metricValue = (lang: Lang, v: string | number) =>
+  lang === 'en' && typeof v === 'string' ? METRIC_VALUES_EN[v] ?? v : v;
 
 // ── Count-up: rAF ile eski→yeni değere 600ms yumuşak sayım ──
 function CountUp({ value, locale }: { value: number; locale: string }) {
@@ -186,19 +216,22 @@ function CountUp({ value, locale }: { value: number; locale: string }) {
 }
 
 // Tek metrik satırı: sayıysa count-up'lı "değer anahtar", string ise "anahtar: değer"
-function MetricLine({ k, v, locale }: { k: string; v: string | number; locale: string }) {
-  if (typeof v === 'number') {
+// (etiket/değer EN modda label-map'ten çevrilir)
+function MetricLine({ k, v, locale, lang }: { k: string; v: string | number; locale: string; lang: Lang }) {
+  const label = metricLabel(lang, k);
+  const val = metricValue(lang, v);
+  if (typeof val === 'number') {
     return (
       <span className="whitespace-nowrap">
-        <span className="text-copper-bright"><CountUp value={v} locale={locale} /></span>
-        <span className="text-muted"> {k}</span>
+        <span className="text-copper-bright"><CountUp value={val} locale={locale} /></span>
+        <span className="text-muted"> {label}</span>
       </span>
     );
   }
   return (
     <span className="whitespace-nowrap">
-      <span className="text-muted">{k}: </span>
-      <span className="text-ink">{v}</span>
+      <span className="text-muted">{label}: </span>
+      <span className="text-ink">{val}</span>
     </span>
   );
 }
@@ -295,6 +328,11 @@ export function ProcessingTheater(props: {
           .pt-flow { display: none; }
           .pt-fill { transition: none !important; }
         }
+        /* Dar ekranda callout'lar üst üste biner — gizle; aynı metrikler
+           soldaki aşama listesinde çip olarak zaten görünüyor */
+        @media (max-width: 639px) {
+          .pt-callout { display: none; }
+        }
       `}</style>
 
       {/* ── Başlık: dosya çipi + durum + yüzde ── */}
@@ -353,7 +391,7 @@ export function ProcessingTheater(props: {
                     <div className="mt-1.5 flex flex-wrap gap-1.5">
                       {entries.map(([k, v]) => (
                         <span key={k} className="chip !py-[2px] !text-[10px]">
-                          <MetricLine k={k} v={v} locale={locale} />
+                          <MetricLine k={k} v={v} locale={locale} lang={lang} />
                         </span>
                       ))}
                     </div>
@@ -409,16 +447,16 @@ export function ProcessingTheater(props: {
                   left: pos.left,
                   top: pos.top,
                   background: 'var(--color-panel2)',
-                  borderColor: isActive ? 'rgba(208, 138, 69, 0.55)' : 'var(--color-line)',
+                  borderColor: isActive ? 'var(--copper-soft)' : 'var(--color-line)',
                   opacity: isActive ? 1 : 0.78,
-                  boxShadow: isActive ? '0 2px 14px rgba(208, 138, 69, 0.14)' : 'none',
+                  boxShadow: isActive ? '0 2px 14px var(--copper-glow)' : 'none',
                 }}>
                 <div className="flex items-start gap-2">
                   <span className="mt-[4px] inline-block h-[6px] w-[6px] shrink-0 rotate-45 border"
                     style={{ borderColor: 'var(--color-copper)' }} />
                   <div className="flex flex-col">
                     {Object.entries(s.metrics!).map(([k, v]) => (
-                      <MetricLine key={k} k={k} v={v} locale={locale} />
+                      <MetricLine key={k} k={k} v={v} locale={locale} lang={lang} />
                     ))}
                   </div>
                 </div>

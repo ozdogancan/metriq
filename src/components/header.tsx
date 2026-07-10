@@ -28,29 +28,32 @@ export function Header({ lang, theme: initialTheme }: { lang: Lang; theme: 'dark
 
   return (
     <header className="sticky top-0 z-20 border-b border-line bg-bg/85 backdrop-blur-md">
-      <div className="mx-auto flex max-w-6xl items-center justify-between px-5 py-3">
-        <Link href="/" className="group flex items-center gap-3">
+      <div className="mx-auto flex max-w-6xl items-center justify-between px-3 py-3 sm:px-5">
+        {/* mobilde yalnız logo — metin sm ve üstünde görünür (yatay taşma olmasın) */}
+        <Link href="/" className="group flex items-center gap-2 sm:gap-3">
           <Image src="/logo.png" alt="Metriq" width={34} height={34} priority
             className="shrink-0 rounded-[9px] border border-line" />
-          <div>
+          <div className="hidden sm:block">
             <div className="text-[17px] font-bold tracking-tight leading-none">
               metri<span className="text-copper">q</span>
             </div>
             <div className="text-[10px] text-muted font-data tracking-wider mt-0.5">{t(lang, 'tagline')}</div>
           </div>
         </Link>
-        <nav className="flex items-center gap-1.5">
-          <Link href="/" className={`btn btn-ghost ${pathname === '/' ? '!text-ink !border-line' : ''}`}>
+        <nav className="flex items-center gap-0.5 sm:gap-1.5">
+          <Link href="/" className={`btn btn-ghost whitespace-nowrap !px-2 !text-[12px] sm:!px-4 sm:!text-[13px] ${pathname === '/' ? '!text-ink !border-line' : ''}`}>
             {lang === 'tr' ? 'Panel' : 'Dashboard'}
           </Link>
-          <Link href="/calibrations" className={`btn btn-ghost ${pathname.startsWith('/calibrations') ? '!text-ink !border-line' : ''}`}>
+          <Link href="/calibrations" className={`btn btn-ghost whitespace-nowrap !px-2 !text-[12px] sm:!px-4 sm:!text-[13px] ${pathname.startsWith('/calibrations') ? '!text-ink !border-line' : ''}`}>
             {t(lang, 'calibrations')}
           </Link>
           {/* bildirimler */}
           <NotificationsBell lang={lang} />
           {/* tema */}
-          <button onClick={toggleTheme} title={theme === 'dark' ? 'Açık tema' : 'Koyu tema'}
-            className="btn btn-ghost !px-2.5" aria-label="theme">
+          <button onClick={toggleTheme}
+            title={theme === 'dark' ? t(lang, 'theme_light') : t(lang, 'theme_dark')}
+            className="btn btn-ghost !px-2 sm:!px-2.5"
+            aria-label={theme === 'dark' ? t(lang, 'theme_light') : t(lang, 'theme_dark')}>
             {theme === 'dark' ? (
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                 <circle cx="12" cy="12" r="4.5" />
@@ -66,14 +69,14 @@ export function Header({ lang, theme: initialTheme }: { lang: Lang; theme: 'dark
           <div className="flex overflow-hidden rounded-lg border border-line font-data text-[11px]">
             {(['tr', 'en'] as Lang[]).map(l => (
               <button key={l} onClick={() => setLang(l)}
-                className={`px-2.5 py-1.5 uppercase tracking-wide transition-colors ${lang === l ? 'bg-copper/20 text-copper-bright' : 'text-muted hover:text-ink'}`}>
+                className={`px-2 py-1.5 uppercase tracking-wide transition-colors sm:px-2.5 ${lang === l ? 'bg-copper/20 text-copper-bright' : 'text-muted hover:text-ink'}`}>
                 {l}
               </button>
             ))}
           </div>
           {/* çıkış */}
           <button onClick={logout} title={lang === 'tr' ? 'Çıkış' : 'Sign out'}
-            className="btn btn-ghost !px-2.5" aria-label="logout">
+            className="btn btn-ghost !px-2 sm:!px-2.5" aria-label={lang === 'tr' ? 'Çıkış' : 'Sign out'}>
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
               <path d="M16 17l5-5-5-5M21 12H9" />

@@ -3,8 +3,10 @@
 import type { CalibrationRules, MtoRow, RunTotals, SteelRow } from './types';
 import type { ParsedComponent, ParseResult } from './parser/nwd';
 
+// Satır kimliği: ilk 8 karakter ('r' + 7 rastgele) satırlar arası ayırt edici olmalı —
+// AI denetçi rowId eşlemesi id.slice(0,8) ile çalışır (bkz. lib/ai.ts).
 let seq = 0;
-const rid = () => `r${Date.now().toString(36)}${(seq++).toString(36)}`;
+const rid = () => `r${Math.random().toString(36).slice(2, 9).padEnd(7, '0')}-${++seq}`;
 
 export function applyRules(parsed: ParseResult, rules: CalibrationRules): {
   rows: MtoRow[]; steel: SteelRow[]; totals: RunTotals;
@@ -103,8 +105,10 @@ export function applyRules(parsed: ParseResult, rules: CalibrationRules): {
   }
   const codeOrder = ['PIPE', '90 BEND', '45 BEND', 'EQ TEE', 'RED TEE', 'CON RED', 'ECC RED',
     'FLANGE', 'BACKING FLANGE', 'COLLAR', 'BLIND FLANGE', 'WELDOLET', 'MV', 'VALVE'];
+  // bilinmeyen kodlar listenin SONUNA (999) — önüne değil
+  const codeRank = (code: string) => { const i = codeOrder.indexOf(code); return i < 0 ? 999 : i; };
   rows.sort((a, b) => a.line.localeCompare(b.line)
-    || (codeOrder.indexOf(a.code) + 100) - (codeOrder.indexOf(b.code) + 100)
+    || codeRank(a.code) - codeRank(b.code)
     || (b.s1 ?? -1) - (a.s1 ?? -1));
 
   // çelik: profil+boy bazında grupla

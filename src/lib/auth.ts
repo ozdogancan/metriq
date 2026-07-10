@@ -2,7 +2,9 @@
 import 'server-only';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-const SECRET = process.env.AUTH_SECRET || 'metriq-dev-secret-degistir';
+// Prod'da AUTH_SECRET zorunlu (fail-closed) — fallback yalnız dev içindir
+const SECRET = process.env.AUTH_SECRET
+  || (process.env.NODE_ENV === 'production' ? '' : 'metriq-dev-secret-degistir');
 export const SESSION_COOKIE = 'metriq_session';
 const MAX_AGE_S = 60 * 60 * 24 * 30; // 30 gün
 
@@ -17,6 +19,7 @@ function users(): Map<string, string> {
 }
 
 function sign(payload: string): string {
+  if (!SECRET) throw new Error('AUTH_SECRET tanımlı değil — production ortamında zorunlu');
   return createHmac('sha256', SECRET).update(payload).digest('base64url');
 }
 
@@ -34,7 +37,7 @@ export function createSessionToken(email: string): string {
 }
 
 export function verifySessionToken(token: string | undefined): string | null {
-  if (!token) return null;
+  if (!token || !SECRET) return null; // secret yoksa fail-closed
   const dot = token.lastIndexOf('.');
   if (dot < 0) return null;
   let payload: string;

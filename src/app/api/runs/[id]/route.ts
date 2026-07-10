@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
-import { getRun, getRows, getSteel, saveRows, saveRun, deleteRun, addLearningEvents } from '@/lib/store';
+import { getRun, getRows, getSteel, saveRows, saveRun, deleteRun, addLearningEvents, resolveStaleRun } from '@/lib/store';
 import { computeTotals } from '@/lib/vocab';
 import type { LearningEvent, MtoRow } from '@/lib/types';
 
@@ -8,10 +8,15 @@ export const runtime = 'nodejs';
 
 type Ctx = { params: Promise<{ id: string }> };
 
-export async function GET(_req: NextRequest, ctx: Ctx) {
+export async function GET(req: NextRequest, ctx: Ctx) {
   const { id } = await ctx.params;
-  const run = await getRun(id);
+  let run = await getRun(id);
   if (!run) return NextResponse.json({ error: 'not found' }, { status: 404 });
+  run = await resolveStaleRun(run); // 15 dk'yı aşan 'processing' → error
+  // slim=1: yalnız run meta döner (rows/steel yok) — canlı polling için hafif yanıt
+  if (req.nextUrl.searchParams.get('slim') === '1') {
+    return NextResponse.json({ run });
+  }
   const [rows, steel] = await Promise.all([getRows(id), getSteel(id)]);
   return NextResponse.json({ run, rows, steel });
 }
@@ -29,6 +34,23 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
   const body = await req.json();
   if (Array.isArray(body.rows)) {
     const rows = body.rows as MtoRow[];
+    // Satır doğrulaması: bozuk sayılar totals'ı ve kayıtları kirletmesin
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      const sorun =
+        !Number.isFinite(r?.qty) ? 'qty sonlu bir sayı olmalı'
+        : !(r.s1 === null || Number.isFinite(r.s1)) ? 's1 null veya sonlu bir sayı olmalı'
+        : !Number.isFinite(r.s2) ? 's2 sonlu bir sayı olmalı'
+        : (r.unit !== 'M' && r.unit !== 'EA') ? "unit 'M' veya 'EA' olmalı"
+        : (r.scope !== 'MAIN' && r.scope !== 'INFO') ? "scope 'MAIN' veya 'INFO' olmalı"
+        : null;
+      if (sorun) {
+        return NextResponse.json(
+          { error: `Geçersiz satır (${i + 1}. satır${r?.id ? `, id=${r.id}` : ''}): ${sorun}` },
+          { status: 400 },
+        );
+      }
+    }
     const oldRows = await getRows(id);
     const steel = await getSteel(id);
     run.totals = computeTotals(rows, steel);

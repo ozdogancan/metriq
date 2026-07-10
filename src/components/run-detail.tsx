@@ -1,10 +1,43 @@
 'use client';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { toast } from 'sonner';
 import { t, type Lang } from '@/lib/i18n';
 import type { Calibration, MtoRow, Run, SteelRow } from '@/lib/types';
 
 type Tab = 'rows' | 'steel' | 'info';
+
+// Sayısal hücre: teklif-kritik giriş. Taslak string state + blur/Enter'da commit —
+// her tuşta Number()'a çevirmek ondalık noktayı yutuyordu (12.5 → 125 hatası).
+// TR virgülü de kabul edilir; geçersiz giriş eski değere döner.
+function NumCell({ value, nullable, label, onCommit }: {
+  value: number | null; nullable?: boolean; label: string; onCommit: (v: number | null) => void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const shown = draft ?? (value == null ? '' : String(value));
+  function commit() {
+    if (draft == null) return;
+    const raw = draft.trim().replace(',', '.');
+    if (raw === '') { onCommit(nullable ? null : 0); setDraft(null); return; }
+    const n = Number.parseFloat(raw);
+    if (Number.isFinite(n)) onCommit(n);
+    setDraft(null); // geçersizse eski değere döner
+  }
+  return (
+    <input
+      className="!text-right"
+      inputMode="decimal"
+      aria-label={label}
+      value={shown}
+      onChange={e => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={e => {
+        if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+        if (e.key === 'Escape') setDraft(null);
+      }}
+    />
+  );
+}
 
 export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
   lang: Lang; run: Run; initialRows: MtoRow[]; steel: SteelRow[]; calibrations: Calibration[];
@@ -16,6 +49,16 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [calName, setCalName] = useState('');
+
+  const tr = lang === 'tr';
+
+  // kaydedilmemiş düzenlemeler sekme kapanışında kaybolmasın
+  useEffect(() => {
+    if (!dirty) return;
+    const h = (e: BeforeUnloadEvent) => { e.preventDefault(); };
+    window.addEventListener('beforeunload', h);
+    return () => window.removeEventListener('beforeunload', h);
+  }, [dirty]);
 
   const lines = useMemo(() => [...new Set(rows.map(r => r.line))].sort(), [rows]);
   const main = rows.filter(r => r.scope === 'MAIN');
@@ -31,51 +74,124 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
     setDirty(true); setSaving('idle');
   }
 
-  async function save() {
+  function addRow() {
+    const id = `ru-${crypto.randomUUID().slice(0, 12)}`;
+    const row: MtoRow = {
+      id, line: lineFilter || '?', code: '', sub: '',
+      s1: null, s2: 0, qty: 0, unit: 'EA',
+      remark: tr ? 'elle eklendi' : 'added manually',
+      scope: tab === 'info' ? 'INFO' : 'MAIN', edited: true,
+    };
+    setRows(prev => [...prev, row]);
+    setDirty(true); setSaving('idle');
+  }
+
+  function removeRow(id: string) {
+    setRows(prev => prev.filter(r => r.id !== id));
+    setDirty(true); setSaving('idle');
+  }
+
+  async function save(): Promise<boolean> {
     setSaving('saving');
-    const res = await fetch(`/api/runs/${run.id}`, {
-      method: 'PATCH', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ rows }),
-    });
-    setSaving(res.ok ? 'saved' : 'idle');
-    if (res.ok) setDirty(false);
+    try {
+      const res = await fetch(`/api/runs/${run.id}`, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ rows }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || `HTTP ${res.status}`);
+      }
+      setSaving('saved'); setDirty(false);
+      toast.success(tr ? 'Düzenlemeler kaydedildi' : 'Edits saved');
+      return true;
+    } catch (e) {
+      setSaving('idle');
+      toast.error((tr ? 'Kaydedilemedi: ' : 'Save failed: ') + (e instanceof Error ? e.message : ''));
+      return false;
+    }
+  }
+
+  // kirli durumda Excel indirme eski rakamları verir — önce kaydet, sonra indir
+  async function downloadExcel() {
+    if (dirty) {
+      const ok = await save();
+      if (!ok) return;
+    }
+    window.location.href = `/api/runs/${run.id}/excel`;
   }
 
   async function saveCalibration() {
+    // düzenlemeler kaydedilmeden profil çıkarmak yanıltıcı olur
+    if (dirty) {
+      const ok = await save();
+      if (!ok) return;
+    }
     const base = calibrations.find(c => c.id === run.calibrationId);
-    const name = calName || `${run.projectName} kalibrasyonu`;
-    // düzenlenen kod eşlemelerini öğren
+    const name = calName.trim() || base?.name || (tr ? `${run.projectName} kalibrasyonu` : `${run.projectName} calibration`);
+    // kod düzenlemelerinden öğren: orijinal kod → yeni kod eşlemeleri
     const renames: Record<string, string> = { ...(base?.rules.codeRenames ?? {}) };
-    const res = await fetch('/api/calibrations', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        id: base?.id, name,
-        rules: base?.rules ?? undefined,
-        learnedFrom: [...new Set([...(base?.learnedFrom ?? []), run.id])],
-        ...(base ? {} : { rules: { ...defaultRulesFor(run), codeRenames: renames } }),
-      }),
-    });
-    if (res.ok) { setCalName(''); alert(t(lang, 'calibration_saved')); }
+    const byId = new Map(initialRows.map(r => [r.id, r]));
+    for (const r of rows) {
+      const orig = byId.get(r.id);
+      if (orig && r.edited && orig.code && r.code && orig.code !== r.code) renames[orig.code] = r.code;
+    }
+    try {
+      const rules = { ...(base?.rules ?? defaultRulesFor(run)), codeRenames: renames };
+      const res = await fetch('/api/calibrations', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          id: base?.id, name, rules,
+          learnedFrom: [...new Set([...(base?.learnedFrom ?? []), run.id])],
+        }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || `HTTP ${res.status}`);
+      }
+      // öğrenme günlüğüne kalibrasyon olayını da düş (fail-soft)
+      fetch(`/api/runs/${run.id}/events`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ events: [{ kind: 'calibration_saved', before: base?.rules ?? null, after: rules }] }),
+      }).catch(() => {});
+      setCalName('');
+      const learned = Object.keys(renames).length - Object.keys(base?.rules.codeRenames ?? {}).length;
+      toast.success(
+        (tr ? 'Kalibrasyon kaydedildi' : 'Calibration saved') +
+        (learned > 0 ? (tr ? ` · ${learned} kod eşlemesi öğrenildi` : ` · learned ${learned} code mapping(s)`) : '')
+      );
+    } catch (e) {
+      toast.error((tr ? 'Kalibrasyon kaydedilemedi: ' : 'Calibration save failed: ') + (e instanceof Error ? e.message : ''));
+    }
   }
 
   const totals = run.totals;
-  const num = (n: number, d = 1) => n.toLocaleString(lang === 'tr' ? 'tr-TR' : 'en-GB', { maximumFractionDigits: d });
+  const num = (n: number, d = 1) => n.toLocaleString(tr ? 'tr-TR' : 'en-GB', { maximumFractionDigits: d });
 
   return (
     <div className="space-y-6">
       {/* başlık */}
       <div className="rise flex flex-wrap items-end justify-between gap-4">
         <div>
-          <Link href="/" className="font-data text-[11px] text-muted hover:text-copper transition-colors">← METRIQ</Link>
+          <Link href="/" className="font-data text-[11px] text-muted hover:text-copper transition-colors"
+            onClick={e => {
+              if (dirty && !window.confirm(tr ? 'Kaydedilmemiş düzenlemeler var. Yine de çıkılsın mı?' : 'You have unsaved edits. Leave anyway?')) e.preventDefault();
+            }}>← METRIQ</Link>
           <h1 className="mt-1 text-[22px] font-bold tracking-tight">{run.projectName}</h1>
           <div className="mt-1 font-data text-[11px] text-muted">
-            {run.fileName} · {(run.fileSize / 1e6).toFixed(1)} MB · {new Date(run.createdAt).toLocaleString(lang === 'tr' ? 'tr-TR' : 'en-GB')}
+            {run.fileName} · {(run.fileSize / 1e6).toFixed(1)} MB · {new Date(run.createdAt).toLocaleString(tr ? 'tr-TR' : 'en-GB')}
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {dirty && <button onClick={save} className="btn btn-primary">{saving === 'saving' ? t(lang, 'saving') : t(lang, 'save')}</button>}
+          {dirty && (
+            <button onClick={save} disabled={saving === 'saving'} className="btn btn-primary">
+              {saving === 'saving' ? t(lang, 'saving') : t(lang, 'save')}
+            </button>
+          )}
           {saving === 'saved' && <span className="chip"><span className="chip-dot bg-mint" />{t(lang, 'saved')}</span>}
-          <a href={`/api/runs/${run.id}/excel`} className="btn btn-primary">⤓ {t(lang, 'download_excel')}</a>
+          <button onClick={downloadExcel} disabled={saving === 'saving'} className="btn btn-primary">
+            ⤓ {t(lang, 'download_excel')}{dirty ? ' *' : ''}
+          </button>
         </div>
       </div>
 
@@ -101,12 +217,14 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
         <div className="rise rise-2 panel panel-corners px-5 py-4">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-[12px] font-semibold uppercase tracking-wider text-copper">
-              ⛨ {lang === 'tr' ? 'AI Denetçi' : 'AI Auditor'}
+              ⛨ {tr ? 'AI Denetçi' : 'AI Auditor'}
             </span>
             <span className="chip font-data">{run.ai.model.replace('claude-', '')}</span>
-            <span className="chip font-data">{lang === 'tr' ? 'komplexity' : 'complexity'} {run.ai.complexity}/100 · {run.ai.tier}</span>
+            <span className="chip font-data">
+              {tr ? 'karmaşıklık' : 'complexity'} {run.ai.complexity}/100 · {tierLabel(run.ai.tier, lang)}
+            </span>
             {run.ai.findings.length === 0 && (
-              <span className="chip"><span className="chip-dot bg-mint" />{lang === 'tr' ? 'bulgu yok' : 'no findings'}</span>
+              <span className="chip"><span className="chip-dot bg-mint" />{tr ? 'bulgu yok' : 'no findings'}</span>
             )}
           </div>
           {run.ai.summary && <p className="mt-2.5 text-[13px] leading-relaxed text-muted">{run.ai.summary}</p>}
@@ -123,7 +241,7 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
             </ul>
           )}
           <p className="mt-2.5 font-data text-[10px] text-muted">
-            {lang === 'tr'
+            {tr
               ? 'AI yalnız işaretler; rakamlar deterministik motordan gelir. Bulguları kontrol edip satırları düzenleyebilirsin — düzeltmelerin sistemi eğitir.'
               : 'AI only flags; numbers come from the deterministic engine. Review findings and edit rows — your corrections train the system.'}
           </p>
@@ -141,11 +259,13 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
         {tab !== 'steel' && (
           <>
             <select value={lineFilter} onChange={e => setLineFilter(e.target.value)}
+              aria-label={t(lang, 'all_lines')}
               className="panel ml-auto px-3 py-2 text-[12px] outline-none">
               <option value="">{t(lang, 'all_lines')}</option>
               {lines.map(l => <option key={l} value={l}>{l}</option>)}
             </select>
             <input value={q} onChange={e => setQ(e.target.value)} placeholder={t(lang, 'search')}
+              aria-label={t(lang, 'search')}
               className="panel w-40 px-3 py-2 text-[12px] outline-none focus:border-copper/50" />
           </>
         )}
@@ -160,25 +280,67 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
                 <th>{t(lang, 'col_line')}</th><th>{t(lang, 'col_code')}</th><th>{t(lang, 'col_sub')}</th>
                 <th className="!text-right">{t(lang, 'col_size1')}</th><th className="!text-right">{t(lang, 'col_size2')}</th>
                 <th className="!text-right">{t(lang, 'col_qty')}</th><th>{t(lang, 'col_unit')}</th><th>{t(lang, 'col_remark')}</th>
+                <th className="w-8" aria-label={tr ? 'satır işlemleri' : 'row actions'} />
               </tr>
             </thead>
             <tbody className="font-data">
               {visible.map(r => (
                 <tr key={r.id}>
-                  <td className="text-muted">{r.line}</td>
-                  <td><input value={r.code} onChange={e => edit(r.id, { code: e.target.value })} /></td>
-                  <td className="text-muted"><input value={r.sub} onChange={e => edit(r.id, { sub: e.target.value })} /></td>
-                  <td className="num !text-right w-20"><input className="!text-right" value={r.s1 ?? ''} onChange={e => edit(r.id, { s1: e.target.value === '' ? null : Number(e.target.value) })} /></td>
-                  <td className="num !text-right w-20"><input className="!text-right" value={r.s2 || ''} onChange={e => edit(r.id, { s2: Number(e.target.value) || 0 })} /></td>
-                  <td className="num !text-right w-24"><input className="!text-right" value={r.qty} onChange={e => edit(r.id, { qty: Number(e.target.value) || 0 })} /></td>
-                  <td className="text-muted">{r.unit}</td>
+                  <td className="text-muted w-20">
+                    <input value={r.line} aria-label={`${t(lang, 'col_line')} ${r.code}`}
+                      onChange={e => edit(r.id, { line: e.target.value })} />
+                  </td>
+                  <td><input value={r.code} aria-label={`${t(lang, 'col_code')} ${r.line}`}
+                    onChange={e => edit(r.id, { code: e.target.value })} /></td>
+                  <td className="text-muted"><input value={r.sub} aria-label={t(lang, 'col_sub')}
+                    onChange={e => edit(r.id, { sub: e.target.value })} /></td>
+                  <td className="num !text-right w-20">
+                    <NumCell value={r.s1} nullable label={`${t(lang, 'col_size1')} ${r.code}`}
+                      onCommit={v => edit(r.id, { s1: v })} />
+                  </td>
+                  <td className="num !text-right w-20">
+                    <NumCell value={r.s2 || null} nullable label={`${t(lang, 'col_size2')} ${r.code}`}
+                      onCommit={v => edit(r.id, { s2: v ?? 0 })} />
+                  </td>
+                  <td className="num !text-right w-24">
+                    <NumCell value={r.qty} label={`${t(lang, 'col_qty')} ${r.code}`}
+                      onCommit={v => edit(r.id, { qty: v ?? 0 })} />
+                  </td>
+                  <td className="text-muted w-16">
+                    <select value={r.unit} aria-label={t(lang, 'col_unit')}
+                      onChange={e => edit(r.id, { unit: e.target.value as MtoRow['unit'] })}
+                      className="bg-transparent outline-none">
+                      <option value="M">M</option><option value="EA">EA</option>
+                    </select>
+                  </td>
                   <td className="text-muted text-[11px]">{r.remark}{r.edited && <span className="ml-2 text-copper">●</span>}</td>
+                  <td className="w-8 text-center">
+                    <button onClick={() => removeRow(r.id)} aria-label={tr ? `satırı sil: ${r.code}` : `delete row: ${r.code}`}
+                      className="text-muted transition-colors hover:text-danger" title={tr ? 'Satırı sil' : 'Delete row'}>×</button>
+                  </td>
                 </tr>
               ))}
+              {visible.length === 0 && (
+                <tr>
+                  <td colSpan={9} className="py-8 text-center text-[12.5px] text-muted">
+                    {q || lineFilter
+                      ? (tr ? 'Filtreye uyan satır yok.' : 'No rows match the filter.')
+                      : (tr ? 'Bu sekmede satır yok.' : 'No rows in this tab.')}
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         )}
       </div>
+
+      {tab !== 'steel' && (
+        <div className="rise rise-4 -mt-3">
+          <button onClick={addRow} className="btn btn-ghost !text-[12px]">
+            + {tr ? 'Satır ekle' : 'Add row'}
+          </button>
+        </div>
+      )}
 
       <AiInsight lang={lang} runId={run.id} />
 
@@ -186,14 +348,20 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
       <div className="rise rise-4 flex flex-wrap items-center gap-3 border-t border-line pt-5">
         <input value={calName} onChange={e => setCalName(e.target.value)}
           placeholder={`${t(lang, 'calibration')} — ${t(lang, 'name').toLowerCase()}`}
+          aria-label={t(lang, 'calibration')}
           className="panel w-64 px-3.5 py-2.5 text-[13px] outline-none focus:border-copper/50" />
         <button onClick={saveCalibration} className="btn">◈ {t(lang, 'save_calibration')}</button>
         <span className="font-data text-[11px] text-muted">
-          {lang === 'tr' ? 'Düzenlemeler + kurallar profil olarak saklanır; sonraki metrajlara uygulanır.' : 'Edits + rules are stored as a profile; applied to future takeoffs.'}
+          {tr ? 'Kod düzeltmelerin profile işlenir; sonraki metrajlara uygulanır.' : 'Your code corrections are folded into the profile; applied to future takeoffs.'}
         </span>
       </div>
     </div>
   );
+}
+
+function tierLabel(tier: string, lang: Lang): string {
+  if (lang === 'tr') return tier;
+  return tier === 'basit' ? 'simple' : tier === 'orta' ? 'medium' : tier === 'karmaşık' ? 'complex' : tier;
 }
 
 function AiInsight({ lang, runId }: { lang: Lang; runId: string }) {
@@ -202,12 +370,18 @@ function AiInsight({ lang, runId }: { lang: Lang; runId: string }) {
   if (state === 'hidden') return null;
   async function gen() {
     setState('loading');
-    const res = await fetch(`/api/runs/${runId}/insight`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lang }),
-    });
-    if (res.status === 404) { setState('hidden'); return; }
-    const data = await res.json();
-    if (res.ok) { setText(data.text); setState('done'); } else setState('idle');
+    try {
+      const res = await fetch(`/api/runs/${runId}/insight`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lang }),
+      });
+      if (res.status === 404) { setState('hidden'); return; }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setText(data.text); setState('done');
+    } catch (e) {
+      setState('idle');
+      toast.error((lang === 'tr' ? 'AI özeti üretilemedi: ' : 'AI summary failed: ') + (e instanceof Error ? e.message : ''));
+    }
   }
   return (
     <div className="rise panel panel-corners px-5 py-4">
@@ -215,7 +389,7 @@ function AiInsight({ lang, runId }: { lang: Lang; runId: string }) {
         <div className="text-[12px] font-semibold uppercase tracking-wider text-steel">✦ {t(lang, 'ai_insight')}</div>
         {state !== 'done' && (
           <button onClick={gen} disabled={state === 'loading'} className="btn btn-ghost !text-[12px]">
-            {state === 'loading' ? t(lang, 'ai_generating') : '→'}
+            {state === 'loading' ? t(lang, 'ai_generating') : (lang === 'tr' ? 'Üret →' : 'Generate →')}
           </button>
         )}
       </div>
@@ -235,6 +409,8 @@ function Card({ label, value, accent }: { label: string; value: string; accent: 
 }
 
 function SteelTable({ lang, steel }: { lang: Lang; steel: SteelRow[] }) {
+  const loc = lang === 'tr' ? 'tr-TR' : 'en-GB';
+  const fmt = (n: number, d: number) => n.toLocaleString(loc, { minimumFractionDigits: d, maximumFractionDigits: d });
   const totM = steel.reduce((s, r) => s + r.lengthMm * r.count, 0) / 1000;
   const totKg = steel.reduce((s, r) => s + r.totalKg, 0);
   const totN = steel.reduce((s, r) => s + r.count, 0);
@@ -251,17 +427,26 @@ function SteelTable({ lang, steel }: { lang: Lang; steel: SteelRow[] }) {
         {steel.map(r => (
           <tr key={r.id}>
             <td>{r.profile}</td>
-            <td className="num !text-right">{r.lengthMm.toLocaleString()}</td>
+            <td className="num !text-right">{r.lengthMm.toLocaleString(loc)}</td>
             <td className="num !text-right">{r.count}</td>
-            <td className="num !text-right">{((r.lengthMm * r.count) / 1000).toFixed(2)}</td>
-            <td className="num !text-right">{r.totalKg.toFixed(1)}</td>
+            <td className="num !text-right">{fmt((r.lengthMm * r.count) / 1000, 2)}</td>
+            <td className="num !text-right">{fmt(r.totalKg, 1)}</td>
           </tr>
         ))}
-        <tr className="font-bold">
-          <td>TOPLAM</td><td /><td className="num !text-right">{totN}</td>
-          <td className="num !text-right text-mint">{totM.toFixed(2)}</td>
-          <td className="num !text-right text-mint">{totKg.toFixed(1)}</td>
-        </tr>
+        {steel.length === 0 && (
+          <tr>
+            <td colSpan={5} className="py-8 text-center text-[12.5px] text-muted">
+              {lang === 'tr' ? 'Bu modelde çelik profili bulunamadı.' : 'No steel profiles found in this model.'}
+            </td>
+          </tr>
+        )}
+        {steel.length > 0 && (
+          <tr className="font-bold">
+            <td>{lang === 'tr' ? 'TOPLAM' : 'TOTAL'}</td><td /><td className="num !text-right">{totN}</td>
+            <td className="num !text-right text-mint">{fmt(totM, 2)}</td>
+            <td className="num !text-right text-mint">{fmt(totKg, 1)}</td>
+          </tr>
+        )}
       </tbody>
     </table>
   );

@@ -2,7 +2,9 @@
 import { NextResponse, type NextRequest } from 'next/server';
 
 const SESSION_COOKIE = 'metriq_session';
-const SECRET = process.env.AUTH_SECRET || 'metriq-dev-secret-degistir';
+// Prod'da AUTH_SECRET zorunlu (fail-closed) — fallback yalnız dev içindir
+const SECRET = process.env.AUTH_SECRET
+  || (process.env.NODE_ENV === 'production' ? '' : 'metriq-dev-secret-degistir');
 
 function b64urlToBytes(s: string): Uint8Array {
   const b64 = s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4);
@@ -18,7 +20,7 @@ function bytesToB64url(buf: ArrayBuffer): string {
 }
 
 async function verifyToken(token: string | undefined): Promise<boolean> {
-  if (!token) return false;
+  if (!token || !SECRET) return false; // secret yoksa fail-closed → login'e yönlendirir
   const dot = token.lastIndexOf('.');
   if (dot < 0) return false;
   let payload: string;
@@ -51,6 +53,6 @@ export async function proxy(req: NextRequest) {
 export const config = {
   // statikler, login API'si ve marka varlıkları hariç her şey korumalı
   matcher: [
-    '/((?!_next/|api/auth/login|favicon\\.ico|icon\\.png|apple-icon\\.png|opengraph-image|logo\\.png|login-hero\\.png|robots\\.txt).*)',
+    '/((?!_next/|api/auth/login|favicon\\.ico|icon\\.png|apple-icon\\.png|opengraph-image|logo\\.png|login-hero\\.jpg|robots\\.txt).*)',
   ],
 };

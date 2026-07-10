@@ -3,7 +3,7 @@ import { after } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import {
   listRuns, saveRun, saveRows, saveSteel, storeFile, fetchStoredFile, listCalibrations,
-  updateRunMeta, addNotification, listPushSubscriptions, removePushSubscription,
+  updateRunMeta, addNotification, listPushSubscriptions, removePushSubscription, resolveStaleRun,
 } from '@/lib/store';
 import { parseNwd } from '@/lib/parser/nwd';
 import { applyRules } from '@/lib/vocab';
@@ -14,7 +14,12 @@ export const runtime = 'nodejs';
 export const maxDuration = 300;
 
 export async function GET() {
-  return NextResponse.json(await listRuns());
+  const runs = await listRuns();
+  // 15 dk'yı aşan 'processing' run'ları hataya çevir (watchdog)
+  const resolved = await Promise.all(
+    runs.map(r => (r.status === 'processing' ? resolveStaleRun(r) : r)),
+  );
+  return NextResponse.json(resolved);
 }
 
 // ---- aşama yardımcıları ----

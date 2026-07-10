@@ -8,6 +8,13 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
   const { id } = await ctx.params;
   const run = await getRun(id);
   if (!run) return NextResponse.json({ error: 'not found' }, { status: 404 });
+  // İşlem bitmeden Excel indirilemesin — boş/yarım dosya teklifi kirletir
+  if (run.status !== 'done') {
+    const msg = run.status === 'processing'
+      ? 'Metraj hâlâ işleniyor — Excel indirmek için işlemin tamamlanmasını bekleyin.'
+      : 'Bu çalışma hatayla sonuçlandı — Excel çıktısı üretilemiyor. Dosyayı yeniden yükleyin.';
+    return NextResponse.json({ error: msg }, { status: 409 });
+  }
   try {
     const [rows, steel] = await Promise.all([getRows(id), getSteel(id)]);
     const buf = await buildRunWorkbook(run, rows, steel);
