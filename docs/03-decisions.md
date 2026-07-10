@@ -58,6 +58,24 @@
 - **Gerekçe:** Prod'da yanıt tam 4000 tokende kesilip JSON parse'ı düşürüyordu → denetim sessizce null oluyordu (fail-soft doğru çalıştı ama değer kayboldu).
 - **Sonuç:** Canlı — 26113 prod testinde sonnet-5 / komplexity 40 / 6 bulgu + satır işaretleri döndü.
 
+## ADR-010 — Supabase birincil depolama (kendi projesi)
+- **Tarih:** 2026-07-10
+- **Karar:** Evlumba Pro organizasyonunda ayrı `metriq` Supabase projesi (ref `arivwpipfimfmyxeizne`, Frankfurt/eu-central-1, MICRO compute +$10/ay). `migration.sql` uygulandı, private `models` bucket'ı açıldı; `SUPABASE_URL/SERVICE_ROLE_KEY/BUCKET` env'leri prod+dev+lokal. ADR-008 köprüsü otomatik devre dışı (fallback olarak duruyor); eski `metriq` şeması productmanagement DB'sinden düşürüldü.
+- **Gerekçe:** Kullanıcı talebi (ayrı proje, Pro org); kalıcı depolama + Storage imzalı-URL akışı (>4.5MB dosyalar) ancak gerçek Supabase ile mümkün.
+- **Sonuç:** Canlı — prod E2E (26113): run + AI denetim + bildirim + Excel + learning_events tamamı yeni projede doğrulandı.
+
+## ADR-011 — QA sertleştirme paketi (fail-closed varsayılanı)
+- **Tarih:** 2026-07-10
+- **Karar:** (1) `AUTH_SECRET` prod'da zorunlu — yoksa token üretimi/doğrulaması fail-closed; (2) login'e IP başına 5/dk rate-limit; (3) 15 dk'yı aşan `processing` run'lar watchdog'la `error`a çekilir (`resolveStaleRun`); (4) API gövdeleri doğrulanır (bkz. ADR-012 zod); (5) Excel yalnız `done` run'da (409); (6) sayısal hücre girişleri blur-commit (as-you-type Number() coercion'ı yasak — 12.5→125 hatası).
+- **Gerekçe:** Teklif-kritik platformda sessiz bozulma kabul edilemez; denetim turu (36 ajan) 11 doğrulanmış bulgu çıkardı, tümü bu pakette kapatıldı.
+- **Sonuç:** Canlı — canlı tarayıcı + prod API testleriyle doğrulandı (2026-07-10).
+
+## ADR-012 — OSS seçimi: TanStack Table + react-virtual + zod + sonner
+- **Tarih:** 2026-07-10
+- **Karar:** MTO grid'i headless TanStack Table v8 (+ 80+ satırda react-virtual) üzerinde; API doğrulama zod v4 (`src/lib/schemas.ts`); anlık geri bildirim sonner. Reddedilenler: Glide Data Grid (React 19 stabil desteği yok, canvas=tema uyumsuz), react-dropzone (mevcut el yapımı dropzone yeterli), react-number-format (grid'de blur-commit deseni daha güvenli), three.js/NWD önizleme (MTO doğruluğuna katkısı yok, efor L).
+- **Gerekçe:** Popülerlik/bakım/React-19 uyumu web araştırmasıyla doğrulandı (2026-07-10); headless yaklaşım bakır/grafit tasarımı birebir korur.
+- **Sonuç:** Canlı — sıralama + virtualizasyon + zod 400 yolları prod'da test edildi.
+
 ---
 
 ## Yeni karar şablonu
