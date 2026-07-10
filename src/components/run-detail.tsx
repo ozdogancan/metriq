@@ -146,6 +146,8 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
         )}
       </div>
 
+      <AiInsight lang={lang} runId={run.id} />
+
       {/* kalibrasyon kaydet */}
       <div className="rise rise-4 flex flex-wrap items-center gap-3 border-t border-line pt-5">
         <input value={calName} onChange={e => setCalName(e.target.value)}
@@ -156,6 +158,34 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
           {lang === 'tr' ? 'Düzenlemeler + kurallar profil olarak saklanır; sonraki metrajlara uygulanır.' : 'Edits + rules are stored as a profile; applied to future takeoffs.'}
         </span>
       </div>
+    </div>
+  );
+}
+
+function AiInsight({ lang, runId }: { lang: Lang; runId: string }) {
+  const [state, setState] = useState<'idle' | 'loading' | 'done' | 'hidden'>('idle');
+  const [text, setText] = useState('');
+  if (state === 'hidden') return null;
+  async function gen() {
+    setState('loading');
+    const res = await fetch(`/api/runs/${runId}/insight`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ lang }),
+    });
+    if (res.status === 404) { setState('hidden'); return; }
+    const data = await res.json();
+    if (res.ok) { setText(data.text); setState('done'); } else setState('idle');
+  }
+  return (
+    <div className="rise panel panel-corners px-5 py-4">
+      <div className="flex items-center justify-between">
+        <div className="text-[12px] font-semibold uppercase tracking-wider text-steel">✦ {t(lang, 'ai_insight')}</div>
+        {state !== 'done' && (
+          <button onClick={gen} disabled={state === 'loading'} className="btn btn-ghost !text-[12px]">
+            {state === 'loading' ? t(lang, 'ai_generating') : '→'}
+          </button>
+        )}
+      </div>
+      {state === 'done' && <p className="mt-2 text-[13px] leading-relaxed text-ink/90">{text}</p>}
     </div>
   );
 }

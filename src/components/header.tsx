@@ -1,28 +1,36 @@
 'use client';
 import Link from 'next/link';
+import Image from 'next/image';
+import { useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { t, type Lang } from '@/lib/i18n';
 
-export function Header({ lang }: { lang: Lang }) {
+export function Header({ lang, theme: initialTheme }: { lang: Lang; theme: 'dark' | 'light' }) {
   const router = useRouter();
   const pathname = usePathname();
+  const [theme, setTheme] = useState(initialTheme);
 
   function setLang(l: Lang) {
     document.cookie = `lang=${l};path=/;max-age=31536000`;
     router.refresh();
   }
+  function toggleTheme() {
+    const next = theme === 'dark' ? 'light' : 'dark';
+    setTheme(next);
+    document.cookie = `theme=${next};path=/;max-age=31536000`;
+    document.documentElement.dataset.theme = next;
+  }
+  async function logout() {
+    await fetch('/api/auth/logout', { method: 'POST' });
+    window.location.href = '/login';
+  }
 
   return (
     <header className="sticky top-0 z-20 border-b border-line bg-bg/85 backdrop-blur-md">
-      <div className="mx-auto flex max-w-6xl items-center justify-between px-5 py-3.5">
+      <div className="mx-auto flex max-w-6xl items-center justify-between px-5 py-3">
         <Link href="/" className="group flex items-center gap-3">
-          {/* logo: ölçü oku + Q */}
-          <svg width="30" height="30" viewBox="0 0 30 30" className="shrink-0">
-            <rect x="1" y="1" width="28" height="28" rx="7" fill="none" stroke="#d08a45" strokeWidth="1.4" />
-            <path d="M7 21 L21 7" stroke="#eaa45c" strokeWidth="1.6" strokeLinecap="round" />
-            <path d="M7 21 l4.4 -1.2 M7 21 l1.2 -4.4" stroke="#eaa45c" strokeWidth="1.6" strokeLinecap="round" />
-            <path d="M21 7 l-4.4 1.2 M21 7 l-1.2 4.4" stroke="#eaa45c" strokeWidth="1.6" strokeLinecap="round" />
-          </svg>
+          <Image src="/logo.png" alt="Metriq" width={34} height={34} priority
+            className="shrink-0 rounded-[9px] border border-line" />
           <div>
             <div className="text-[17px] font-bold tracking-tight leading-none">
               metri<span className="text-copper">q</span>
@@ -37,7 +45,22 @@ export function Header({ lang }: { lang: Lang }) {
           <Link href="/calibrations" className={`btn btn-ghost ${pathname.startsWith('/calibrations') ? '!text-ink !border-line' : ''}`}>
             {t(lang, 'calibrations')}
           </Link>
-          <div className="ml-2 flex overflow-hidden rounded-lg border border-line font-data text-[11px]">
+          {/* tema */}
+          <button onClick={toggleTheme} title={theme === 'dark' ? 'Açık tema' : 'Koyu tema'}
+            className="btn btn-ghost !px-2.5" aria-label="theme">
+            {theme === 'dark' ? (
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <circle cx="12" cy="12" r="4.5" />
+                <path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.6 4.6l1.8 1.8M17.6 17.6l1.8 1.8M4.6 19.4l1.8-1.8M17.6 6.4l1.8-1.8" />
+              </svg>
+            ) : (
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />
+              </svg>
+            )}
+          </button>
+          {/* dil */}
+          <div className="flex overflow-hidden rounded-lg border border-line font-data text-[11px]">
             {(['tr', 'en'] as Lang[]).map(l => (
               <button key={l} onClick={() => setLang(l)}
                 className={`px-2.5 py-1.5 uppercase tracking-wide transition-colors ${lang === l ? 'bg-copper/20 text-copper-bright' : 'text-muted hover:text-ink'}`}>
@@ -45,6 +68,14 @@ export function Header({ lang }: { lang: Lang }) {
               </button>
             ))}
           </div>
+          {/* çıkış */}
+          <button onClick={logout} title={lang === 'tr' ? 'Çıkış' : 'Sign out'}
+            className="btn btn-ghost !px-2.5" aria-label="logout">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+              <path d="M16 17l5-5-5-5M21 12H9" />
+            </svg>
+          </button>
         </nav>
       </div>
     </header>
