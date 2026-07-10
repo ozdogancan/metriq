@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { getRun, getRows, getSteel, saveRows, saveRun, deleteRun, addLearningEvents, resolveStaleRun } from '@/lib/store';
 import { computeTotals } from '@/lib/vocab';
+import { RowsPatchSchema, zodMessage } from '@/lib/schemas';
 import type { LearningEvent, MtoRow } from '@/lib/types';
 
 export const runtime = 'nodejs';
@@ -31,26 +32,14 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
   const { id } = await ctx.params;
   const run = await getRun(id);
   if (!run) return NextResponse.json({ error: 'not found' }, { status: 404 });
-  const body = await req.json();
-  if (Array.isArray(body.rows)) {
-    const rows = body.rows as MtoRow[];
-    // Satır doğrulaması: bozuk sayılar totals'ı ve kayıtları kirletmesin
-    for (let i = 0; i < rows.length; i++) {
-      const r = rows[i];
-      const sorun =
-        !Number.isFinite(r?.qty) ? 'qty sonlu bir sayı olmalı'
-        : !(r.s1 === null || Number.isFinite(r.s1)) ? 's1 null veya sonlu bir sayı olmalı'
-        : !Number.isFinite(r.s2) ? 's2 sonlu bir sayı olmalı'
-        : (r.unit !== 'M' && r.unit !== 'EA') ? "unit 'M' veya 'EA' olmalı"
-        : (r.scope !== 'MAIN' && r.scope !== 'INFO') ? "scope 'MAIN' veya 'INFO' olmalı"
-        : null;
-      if (sorun) {
-        return NextResponse.json(
-          { error: `Geçersiz satır (${i + 1}. satır${r?.id ? `, id=${r.id}` : ''}): ${sorun}` },
-          { status: 400 },
-        );
-      }
+  const body = await req.json().catch(() => null);
+  if (body && Array.isArray(body.rows)) {
+    // Satır doğrulaması (zod): bozuk sayılar totals'ı ve kayıtları kirletmesin
+    const parsed = RowsPatchSchema.safeParse(body);
+    if (!parsed.success) {
+      return NextResponse.json({ error: `Geçersiz satır verisi — ${zodMessage(parsed.error)}` }, { status: 400 });
     }
+    const rows = parsed.data.rows as MtoRow[];
     const oldRows = await getRows(id);
     const steel = await getSteel(id);
     run.totals = computeTotals(rows, steel);

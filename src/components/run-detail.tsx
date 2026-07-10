@@ -1,11 +1,23 @@
 'use client';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { toast } from 'sonner';
+import {
+  createColumnHelper, flexRender, getCoreRowModel, getSortedRowModel,
+  useReactTable, type SortingState,
+} from '@tanstack/react-table';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { t, type Lang } from '@/lib/i18n';
 import type { Calibration, MtoRow, Run, SteelRow } from '@/lib/types';
 
 type Tab = 'rows' | 'steel' | 'info';
+
+// TanStack meta: hücre renderer'ları düzenleme callback'lerine buradan ulaşır
+interface MtoTableMeta {
+  lang: Lang;
+  onEdit: (id: string, patch: Partial<MtoRow>) => void;
+  onRemove: (id: string) => void;
+}
 
 // Sayısal hücre: teklif-kritik giriş. Taslak string state + blur/Enter'da commit —
 // her tuşta Number()'a çevirmek ondalık noktayı yutuyordu (12.5 → 125 hatası).
@@ -271,68 +283,19 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
         )}
       </div>
 
-      {/* tablo */}
-      <div className="panel panel-corners rise rise-4 overflow-auto" style={{ maxHeight: '58vh' }}>
-        {tab === 'steel' ? <SteelTable lang={lang} steel={steel} /> : (
-          <table className="mtable">
-            <thead>
-              <tr>
-                <th>{t(lang, 'col_line')}</th><th>{t(lang, 'col_code')}</th><th>{t(lang, 'col_sub')}</th>
-                <th className="!text-right">{t(lang, 'col_size1')}</th><th className="!text-right">{t(lang, 'col_size2')}</th>
-                <th className="!text-right">{t(lang, 'col_qty')}</th><th>{t(lang, 'col_unit')}</th><th>{t(lang, 'col_remark')}</th>
-                <th className="w-8" aria-label={tr ? 'satır işlemleri' : 'row actions'} />
-              </tr>
-            </thead>
-            <tbody className="font-data">
-              {visible.map(r => (
-                <tr key={r.id}>
-                  <td className="text-muted w-20">
-                    <input value={r.line} aria-label={`${t(lang, 'col_line')} ${r.code}`}
-                      onChange={e => edit(r.id, { line: e.target.value })} />
-                  </td>
-                  <td><input value={r.code} aria-label={`${t(lang, 'col_code')} ${r.line}`}
-                    onChange={e => edit(r.id, { code: e.target.value })} /></td>
-                  <td className="text-muted"><input value={r.sub} aria-label={t(lang, 'col_sub')}
-                    onChange={e => edit(r.id, { sub: e.target.value })} /></td>
-                  <td className="num !text-right w-20">
-                    <NumCell value={r.s1} nullable label={`${t(lang, 'col_size1')} ${r.code}`}
-                      onCommit={v => edit(r.id, { s1: v })} />
-                  </td>
-                  <td className="num !text-right w-20">
-                    <NumCell value={r.s2 || null} nullable label={`${t(lang, 'col_size2')} ${r.code}`}
-                      onCommit={v => edit(r.id, { s2: v ?? 0 })} />
-                  </td>
-                  <td className="num !text-right w-24">
-                    <NumCell value={r.qty} label={`${t(lang, 'col_qty')} ${r.code}`}
-                      onCommit={v => edit(r.id, { qty: v ?? 0 })} />
-                  </td>
-                  <td className="text-muted w-16">
-                    <select value={r.unit} aria-label={t(lang, 'col_unit')}
-                      onChange={e => edit(r.id, { unit: e.target.value as MtoRow['unit'] })}
-                      className="bg-transparent outline-none">
-                      <option value="M">M</option><option value="EA">EA</option>
-                    </select>
-                  </td>
-                  <td className="text-muted text-[11px]">{r.remark}{r.edited && <span className="ml-2 text-copper">●</span>}</td>
-                  <td className="w-8 text-center">
-                    <button onClick={() => removeRow(r.id)} aria-label={tr ? `satırı sil: ${r.code}` : `delete row: ${r.code}`}
-                      className="text-muted transition-colors hover:text-danger" title={tr ? 'Satırı sil' : 'Delete row'}>×</button>
-                  </td>
-                </tr>
-              ))}
-              {visible.length === 0 && (
-                <tr>
-                  <td colSpan={9} className="py-8 text-center text-[12.5px] text-muted">
-                    {q || lineFilter
-                      ? (tr ? 'Filtreye uyan satır yok.' : 'No rows match the filter.')
-                      : (tr ? 'Bu sekmede satır yok.' : 'No rows in this tab.')}
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        )}
-      </div>
+      {/* tablo — MTO sekmesi TanStack Table (sıralama + virtualizasyon) */}
+      {tab === 'steel' ? (
+        <div className="panel panel-corners rise rise-4 overflow-auto" style={{ maxHeight: '58vh' }}>
+          <SteelTable lang={lang} steel={steel} />
+        </div>
+      ) : (
+        <MtoTable
+          lang={lang} rows={visible} onEdit={edit} onRemove={removeRow}
+          emptyMsg={q || lineFilter
+            ? (tr ? 'Filtreye uyan satır yok.' : 'No rows match the filter.')
+            : (tr ? 'Bu sekmede satır yok.' : 'No rows in this tab.')}
+        />
+      )}
 
       {tab !== 'steel' && (
         <div className="rise rise-4 -mt-3">
@@ -355,6 +318,188 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
           {tr ? 'Kod düzeltmelerin profile işlenir; sonraki metrajlara uygulanır.' : 'Your code corrections are folded into the profile; applied to future takeoffs.'}
         </span>
       </div>
+    </div>
+  );
+}
+
+// ---- MTO tablosu: TanStack Table v8 (headless, sıralama) + react-virtual ----
+const colh = createColumnHelper<MtoRow>();
+const meta = (table: { options: { meta?: unknown } }) => table.options.meta as MtoTableMeta;
+
+const MTO_COLUMNS = [
+  colh.accessor('line', {
+    id: 'line',
+    header: ctx => t(meta(ctx.table).lang, 'col_line'),
+    cell: ctx => {
+      const m = meta(ctx.table); const r = ctx.row.original;
+      return <input value={r.line} aria-label={`${t(m.lang, 'col_line')} ${r.code}`}
+        onChange={e => m.onEdit(r.id, { line: e.target.value })} />;
+    },
+  }),
+  colh.accessor('code', {
+    id: 'code',
+    header: ctx => t(meta(ctx.table).lang, 'col_code'),
+    cell: ctx => {
+      const m = meta(ctx.table); const r = ctx.row.original;
+      return <input value={r.code} aria-label={`${t(m.lang, 'col_code')} ${r.line}`}
+        onChange={e => m.onEdit(r.id, { code: e.target.value })} />;
+    },
+  }),
+  colh.accessor('sub', {
+    id: 'sub', enableSorting: false,
+    header: ctx => t(meta(ctx.table).lang, 'col_sub'),
+    cell: ctx => {
+      const m = meta(ctx.table); const r = ctx.row.original;
+      return <input value={r.sub} aria-label={t(m.lang, 'col_sub')}
+        onChange={e => m.onEdit(r.id, { sub: e.target.value })} />;
+    },
+  }),
+  colh.accessor('s1', {
+    id: 's1', sortUndefined: 'last',
+    header: ctx => t(meta(ctx.table).lang, 'col_size1'),
+    cell: ctx => {
+      const m = meta(ctx.table); const r = ctx.row.original;
+      return <NumCell value={r.s1} nullable label={`${t(m.lang, 'col_size1')} ${r.code}`}
+        onCommit={v => m.onEdit(r.id, { s1: v })} />;
+    },
+  }),
+  colh.accessor('s2', {
+    id: 's2', enableSorting: false,
+    header: ctx => t(meta(ctx.table).lang, 'col_size2'),
+    cell: ctx => {
+      const m = meta(ctx.table); const r = ctx.row.original;
+      return <NumCell value={r.s2 || null} nullable label={`${t(m.lang, 'col_size2')} ${r.code}`}
+        onCommit={v => m.onEdit(r.id, { s2: v ?? 0 })} />;
+    },
+  }),
+  colh.accessor('qty', {
+    id: 'qty',
+    header: ctx => t(meta(ctx.table).lang, 'col_qty'),
+    cell: ctx => {
+      const m = meta(ctx.table); const r = ctx.row.original;
+      return <NumCell value={r.qty} label={`${t(m.lang, 'col_qty')} ${r.code}`}
+        onCommit={v => m.onEdit(r.id, { qty: v ?? 0 })} />;
+    },
+  }),
+  colh.accessor('unit', {
+    id: 'unit', enableSorting: false,
+    header: ctx => t(meta(ctx.table).lang, 'col_unit'),
+    cell: ctx => {
+      const m = meta(ctx.table); const r = ctx.row.original;
+      return (
+        <select value={r.unit} aria-label={t(m.lang, 'col_unit')}
+          onChange={e => m.onEdit(r.id, { unit: e.target.value as MtoRow['unit'] })}
+          className="bg-transparent outline-none">
+          <option value="M">M</option><option value="EA">EA</option>
+        </select>
+      );
+    },
+  }),
+  colh.accessor('remark', {
+    id: 'remark', enableSorting: false,
+    header: ctx => t(meta(ctx.table).lang, 'col_remark'),
+    cell: ctx => {
+      const r = ctx.row.original;
+      return <>{r.remark}{r.edited && <span className="ml-2 text-copper">●</span>}</>;
+    },
+  }),
+  colh.display({
+    id: 'actions',
+    header: () => null,
+    cell: ctx => {
+      const m = meta(ctx.table); const r = ctx.row.original;
+      const tr = m.lang === 'tr';
+      return (
+        <button onClick={() => m.onRemove(r.id)} aria-label={tr ? `satırı sil: ${r.code}` : `delete row: ${r.code}`}
+          className="text-muted transition-colors hover:text-danger" title={tr ? 'Satırı sil' : 'Delete row'}>×</button>
+      );
+    },
+  }),
+];
+
+// sütun hizalama/genişlik sınıfları (tasarım eskisiyle birebir)
+const TD_CLASS: Record<string, string> = {
+  line: 'text-muted w-20', code: '', sub: 'text-muted',
+  s1: 'num !text-right w-20', s2: 'num !text-right w-20', qty: 'num !text-right w-24',
+  unit: 'text-muted w-16', remark: 'text-muted text-[11px]', actions: 'w-8 text-center',
+};
+const TH_RIGHT = new Set(['s1', 's2', 'qty']);
+
+function MtoTable({ lang, rows, onEdit, onRemove, emptyMsg }: {
+  lang: Lang; rows: MtoRow[]; emptyMsg: string;
+  onEdit: (id: string, patch: Partial<MtoRow>) => void;
+  onRemove: (id: string) => void;
+}) {
+  const [sorting, setSorting] = useState<SortingState>([]);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const table = useReactTable({
+    data: rows,
+    columns: MTO_COLUMNS,
+    state: { sorting },
+    onSortingChange: setSorting,
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    getRowId: r => r.id,
+    meta: { lang, onEdit, onRemove } satisfies MtoTableMeta,
+  });
+  const tableRows = table.getRowModel().rows;
+
+  // 80+ satırda virtualizasyon — dev metrajlarda da akıcı kaydırma
+  const virtual = rows.length > 80;
+  const virtualizer = useVirtualizer({
+    count: tableRows.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 37,
+    overscan: 12,
+    enabled: virtual,
+  });
+  const vItems = virtualizer.getVirtualItems();
+  const padTop = virtual && vItems.length ? vItems[0].start : 0;
+  const padBottom = virtual && vItems.length ? virtualizer.getTotalSize() - vItems[vItems.length - 1].end : 0;
+  const renderRows = virtual ? vItems.map(v => tableRows[v.index]) : tableRows;
+
+  return (
+    <div ref={scrollRef} className="panel panel-corners rise rise-4 overflow-auto" style={{ maxHeight: '58vh' }}>
+      <table className="mtable">
+        <thead>
+          {table.getHeaderGroups().map(hg => (
+            <tr key={hg.id}>
+              {hg.headers.map(h => {
+                const sortable = h.column.getCanSort();
+                const dir = h.column.getIsSorted();
+                return (
+                  <th key={h.id}
+                    className={`${TH_RIGHT.has(h.column.id) ? '!text-right' : ''} ${sortable ? 'cursor-pointer select-none' : ''}`}
+                    onClick={sortable ? h.column.getToggleSortingHandler() : undefined}
+                    aria-sort={dir === 'asc' ? 'ascending' : dir === 'desc' ? 'descending' : undefined}>
+                    {flexRender(h.column.columnDef.header, h.getContext())}
+                    {dir === 'asc' ? ' ▲' : dir === 'desc' ? ' ▼' : ''}
+                  </th>
+                );
+              })}
+            </tr>
+          ))}
+        </thead>
+        <tbody className="font-data">
+          {padTop > 0 && <tr><td colSpan={MTO_COLUMNS.length} style={{ height: padTop, padding: 0, border: 0 }} /></tr>}
+          {renderRows.map(row => (
+            <tr key={row.id}>
+              {row.getVisibleCells().map(cell => (
+                <td key={cell.id} className={TD_CLASS[cell.column.id] ?? ''}>
+                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                </td>
+              ))}
+            </tr>
+          ))}
+          {padBottom > 0 && <tr><td colSpan={MTO_COLUMNS.length} style={{ height: padBottom, padding: 0, border: 0 }} /></tr>}
+          {rows.length === 0 && (
+            <tr>
+              <td colSpan={MTO_COLUMNS.length} className="py-8 text-center text-[12.5px] text-muted">{emptyMsg}</td>
+            </tr>
+          )}
+        </tbody>
+      </table>
     </div>
   );
 }
