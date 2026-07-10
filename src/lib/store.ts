@@ -17,8 +17,10 @@ function client(): SupabaseClient {
   return sb;
 }
 
-// ---------- Yerel dosya sürücüsü (dev) ----------
-const DATA_DIR = path.join(process.cwd(), '.data');
+// ---------- Yerel dosya sürücüsü (dev; Vercel'de /tmp = geçici, Supabase gelene dek) ----------
+const DATA_DIR = process.env.VERCEL
+  ? path.join('/tmp', 'metriq-data')
+  : path.join(process.cwd(), '.data');
 async function readJson<T>(name: string, fallback: T): Promise<T> {
   try { return JSON.parse(await fs.readFile(path.join(DATA_DIR, name), 'utf8')) as T; }
   catch { return fallback; }

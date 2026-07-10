@@ -160,8 +160,9 @@ function CountUp({ value, locale }: { value: number; locale: string }) {
     const from = shownRef.current;
     const to = value;
     if (from === to) return;
-    // Hareket azaltma tercihine saygı: doğrudan hedefe atla
-    if (typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    // Hareket azaltma tercihi VEYA gizli sekme (rAF durur): doğrudan hedefe atla
+    if (typeof window !== 'undefined' &&
+        (window.matchMedia('(prefers-reduced-motion: reduce)').matches || document.visibilityState === 'hidden')) {
       shownRef.current = to;
       setShown(to);
       return;
