@@ -99,7 +99,7 @@ async function processRun(run: Run, buf: Buffer, rules: CalibrationRules, lang: 
       : { 'durum': 'atlandı' });
     stages = stageSet(stages, 'finalize', 'done', { 'sn': +((Date.now() - t0) / 1000).toFixed(1) });
 
-    await updateRunMeta(run.id, { progress: stages, ai, status: 'done', totals });
+    await updateRunMeta(run.id, { progress: stages, ai, status: 'done', totals, fasteners: parsed.fasteners });
 
     const title = lang === 'tr' ? `Metraj hazır: ${run.projectName}` : `Take-off ready: ${run.projectName}`;
     const body = lang === 'tr'

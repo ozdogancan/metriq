@@ -208,7 +208,7 @@ function dbRun(r: Record<string, unknown>): Run {
 }
 
 // ---------- Çalışma ilerlemesi + AI (v2) ----------
-export async function updateRunMeta(runId: string, patch: { progress?: import('./types').StageEvent[]; ai?: import('./types').AiAudit | null; status?: Run['status']; error?: string; totals?: Run['totals'] }): Promise<void> {
+export async function updateRunMeta(runId: string, patch: { progress?: import('./types').StageEvent[]; ai?: import('./types').AiAudit | null; status?: Run['status']; error?: string; totals?: Run['totals']; fasteners?: Run['fasteners'] }): Promise<void> {
   if (isSupabase) {
     const db: Record<string, unknown> = {};
     if (patch.progress !== undefined) db.progress = patch.progress;
@@ -216,6 +216,7 @@ export async function updateRunMeta(runId: string, patch: { progress?: import('.
     if (patch.status !== undefined) db.status = patch.status;
     if (patch.error !== undefined) db.error = patch.error;
     if (patch.totals !== undefined) db.totals = patch.totals;
+    if (patch.fasteners !== undefined) db.fasteners = patch.fasteners;
     const { error } = await client().from('runs').update(db).eq('id', runId);
     if (error) throw error;
     return;
