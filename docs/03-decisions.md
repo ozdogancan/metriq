@@ -46,6 +46,18 @@
 - **Gerekçe:** Platform kodu ile ayrıştırma motoru bağımsız evrilsin; motor 3 vakayla regresyon-testli, sözleşme kırılmadan güncellenebilir.
 - **Sonuç:** Sözleşme canlı; TS portu entegrasyonu sürüyor.
 
+## ADR-008 — Postgres-KV köprüsü (geçici kalıcı depolama)
+- **Tarih:** 2026-07-10
+- **Karar:** Vercel'de `/tmp` fallback'i instance-başına olduğundan (POST'un yazdığı run'ı GET göremiyordu) kullanıcının mevcut Supabase Postgres'inde izole `metriq` şeması açıldı: `metriq.kv` (jsonb doküman) + `metriq.files` (bytea). Sürücü `src/lib/store-pg.ts`; `DATABASE_URL` set + `SUPABASE_URL` yok iken aktif (`isPg`). Runlar per-key (`run-{id}`) — eşzamanlı yükleme yarışı yok.
+- **Gerekçe:** Supabase projesi kullanıcı sign-in'ine bağlı; prod'un çalışır olması şart. Tek env değişkeniyle geri alınabilir: kendi Supabase projesi gelince `SUPABASE_URL/SERVICE_ROLE_KEY` set edilir, köprü otomatik devre dışı kalır (veri taşıma: kv → gerçek tablolar).
+- **Sonuç:** Canlı — prod E2E doğrulandı (2026-07-10). Sınır: >4.5MB dosya yüklemesi Supabase Storage imzalı-URL akışı gelene dek kapalı (Vercel body limiti).
+
+## ADR-009 — AI denetim yanıt bütçesi
+- **Tarih:** 2026-07-10
+- **Karar:** Denetim çağrısı `max_tokens: 8000`, `stop_reason === 'max_tokens'` ise tek sefer 16k ile tekrar; promptta "en fazla 15 bulgu, tek cümle" sınırı.
+- **Gerekçe:** Prod'da yanıt tam 4000 tokende kesilip JSON parse'ı düşürüyordu → denetim sessizce null oluyordu (fail-soft doğru çalıştı ama değer kayboldu).
+- **Sonuç:** Canlı — 26113 prod testinde sonnet-5 / komplexity 40 / 6 bulgu + satır işaretleri döndü.
+
 ---
 
 ## Yeni karar şablonu
