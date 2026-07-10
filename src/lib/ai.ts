@@ -94,7 +94,7 @@ export async function runAudit(args: {
 4) Vokabüler uyumu (profil: ${vocab}): kod adları profile aykırıysa belirt.
 5) Bağlantı elemanı sağlaması: conta=${fasteners.gaskets}, cıvata seti=${fasteners.boltSets}, stub/collar=${fasteners.stubEnds} — flanşlı sistemde conta≈cıvata beklenir; ciddi sapmayı raporla.
 
-Kurallar: SADECE verilen verilerden çalış, rakam uydurma. Her bulguda mümkünse rowId ver (satırın başındaki 8 haneli kimlik). Kritik=teklifi etkiler, warn=kontrol edilmeli, info=not. Bulgu yoksa boş findings + kısa olumlu özet döndür. Özet 2-3 cümle, Türkçe.
+Kurallar: SADECE verilen verilerden çalış, rakam uydurma. Her bulguda mümkünse rowId ver (satırın başındaki 8 haneli kimlik). Kritik=teklifi etkiler, warn=kontrol edilmeli, info=not. EN FAZLA 15 bulgu — en önemlileri seç, her mesaj tek cümle. Bulgu yoksa boş findings + kısa olumlu özet döndür. Özet 2-3 cümle, Türkçe.
 
 Dosya: ${fileName} | Ana satır: ${main.length} | Bilgi satırı: ${info.length}
 MTO (id|hat|kod|çap1xçap2|miktar):
@@ -104,13 +104,23 @@ ${compact}
 
   try {
     console.log(`[ai] denetim başlıyor: model=${complexity.model} satır=${main.length}`);
-    const res = await client().messages.create({
+    // max_tokens tavanına çarpan yanıt JSON'u yarıda keser — bir kez daha geniş tavanla dene
+    let res = await client().messages.create({
       model: complexity.model,
-      max_tokens: 4000,
+      max_tokens: 8000,
       messages: [{ role: 'user', content: prompt }],
       output_config: { format: { type: 'json_schema', schema: AUDIT_SCHEMA } },
     });
-    console.log(`[ai] denetim yanıtı geldi: ${res.usage?.output_tokens ?? '?'} token`);
+    if (res.stop_reason === 'max_tokens') {
+      console.warn('[ai] yanıt kesildi (max_tokens), 16k tavanla tekrar');
+      res = await client().messages.create({
+        model: complexity.model,
+        max_tokens: 16_000,
+        messages: [{ role: 'user', content: prompt }],
+        output_config: { format: { type: 'json_schema', schema: AUDIT_SCHEMA } },
+      });
+    }
+    console.log(`[ai] denetim yanıtı geldi: ${res.usage?.output_tokens ?? '?'} token, stop=${res.stop_reason}`);
     const text = res.content.find(b => b.type === 'text');
     if (!text || text.type !== 'text') return null;
     const parsed = JSON.parse(text.text) as { findings: AiFinding[]; summary: string };
