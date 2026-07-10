@@ -1,7 +1,19 @@
 // Metriq — parser çıktısına kalibrasyon kurallarını uygular → MtoRow[]
 // Kurallar üç gerçek müşteri vakasıyla kalibre edildi (bkz. dwg-takeoff/METODOLOJI.md)
-import type { CalibrationRules, MtoRow, RunTotals, SteelRow } from './types';
+import type { CalibrationRules, MtoRow, RunTotals, SteelRow, VocabProfileId } from './types';
 import type { ParsedComponent, ParseResult } from './parser/nwd';
+
+// Tesisat tipini dosyadan algıla — sinyaller iki gerçek vakada ölçüldü (2026-07-10):
+// hijyenik (26113): TRU-BORE=22, DIN 11850 spec'leri; çelik (26010): ASME=540, WELD NECK=124, A105.
+export function detectVocab(parsed: ParseResult): { vocab: VocabProfileId; hygienicHits: number; steelHits: number } {
+  let hyg = 0, steel = 0;
+  for (const c of parsed.components) {
+    const d = (c.desc + ' ' + c.sub).toUpperCase();
+    if (d.includes('TRU-BORE') || d.includes('TRUBORE') || d.includes('TRI-CLAMP') || d.includes('FERRULE') || d.includes('11850')) hyg++;
+    if (d.includes('ASME') || d.includes('WELD NECK') || d.includes('A105')) steel++;
+  }
+  return { vocab: hyg > steel ? 'hygienic' : 'steel-plant', hygienicHits: hyg, steelHits: steel };
+}
 
 // Satır kimliği: ilk 8 karakter ('r' + 7 rastgele) satırlar arası ayırt edici olmalı —
 // AI denetçi rowId eşlemesi id.slice(0,8) ile çalışır (bkz. lib/ai.ts).
@@ -99,8 +111,14 @@ export function applyRules(parsed: ParseResult, rules: CalibrationRules): {
     if (f.stubEnds) push('*', 'STUB END', '', null, 0, f.stubEnds, 'EA', '', 'MAIN');
   }
 
+  // öğrenilen kapsam-dışı hatlar: satırları silmek yerine INFO'ya indir (izlenebilir kalsın)
+  const excl = new Set(rules.excludeLines ?? []);
   for (const r of agg.values()) {
     if (r.unit === 'M') r.qty = Math.round(r.qty * 1000) / 1000;
+    if (r.scope === 'MAIN' && excl.has(r.line)) {
+      r.scope = 'INFO';
+      r.remark = [r.remark, 'kapsam dışı (kalibrasyon)'].filter(Boolean).join('; ');
+    }
     rows.push(r);
   }
   const codeOrder = ['PIPE', '90 BEND', '45 BEND', 'EQ TEE', 'RED TEE', 'CON RED', 'ECC RED',

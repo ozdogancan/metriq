@@ -139,6 +139,24 @@ function RulesEditor({ lang, cal, onChange }: { lang: Lang; cal: Calibration; on
           {Object.entries(r.codeRenames).map(([a, b]) => `${a}→${b}`).join(' · ')}
         </div>
       )}
+      {(r.excludeLines?.length ?? 0) > 0 && (
+        <div className="space-y-1.5">
+          <div className="font-data text-[11px] text-muted">
+            {lang === 'tr' ? 'Öğrenilen kapsam-dışı hatlar (satırları bilgi sekmesine iner):' : 'Learned excluded lines (rows demoted to info tab):'}
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {r.excludeLines!.map(l => (
+              <span key={l} className="chip font-data text-[11px]">
+                {l}
+                <button
+                  onClick={() => set('excludeLines', r.excludeLines!.filter(x => x !== l))}
+                  aria-label={lang === 'tr' ? `hattı kapsama geri al: ${l}` : `re-include line: ${l}`}
+                  className="ml-1.5 text-muted transition-colors hover:text-danger">×</button>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

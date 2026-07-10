@@ -29,6 +29,7 @@ export const CalibrationRulesSchema = z.object({
   includeFasteners: z.boolean(),
   grossPipeFactor: z.number().finite().min(0.5).max(2),
   codeRenames: z.record(z.string(), z.string()),
+  excludeLines: z.array(z.string().min(1)).max(1000).optional(),
 });
 
 export const CalibrationPostSchema = z.object({

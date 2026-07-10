@@ -60,6 +60,7 @@ export interface CalibrationRules {
   includeFasteners: boolean;      // conta/cıvata ana listede
   grossPipeFactor: number;        // 1.0 = net; 1.18 ≈ gross
   codeRenames: Record<string, string>; // öğrenilen kod eşlemeleri
+  excludeLines?: string[];        // öğrenilen kapsam-dışı hatlar (satırları INFO'ya iner)
 }
 
 export interface Calibration {
@@ -81,6 +82,7 @@ export const DEFAULT_RULES: Record<VocabProfileId, CalibrationRules> = {
     includeFasteners: false,
     grossPipeFactor: 1.0,
     codeRenames: {},
+    excludeLines: [],
   },
   hygienic: {
     vocab: 'hygienic',
@@ -91,6 +93,7 @@ export const DEFAULT_RULES: Record<VocabProfileId, CalibrationRules> = {
     includeFasteners: false,
     grossPipeFactor: 1.0,
     codeRenames: {},
+    excludeLines: [],
   },
 };
 

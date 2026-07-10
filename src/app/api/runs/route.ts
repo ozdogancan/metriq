@@ -6,7 +6,7 @@ import {
   updateRunMeta, addNotification, listPushSubscriptions, removePushSubscription, resolveStaleRun,
 } from '@/lib/store';
 import { parseNwd } from '@/lib/parser/nwd';
-import { applyRules } from '@/lib/vocab';
+import { applyRules, detectVocab } from '@/lib/vocab';
 import { computeComplexity, runAudit, aiEnabled } from '@/lib/ai';
 import { DEFAULT_RULES, STAGE_ORDER, type Run, type StageEvent, type VocabProfileId, type CalibrationRules } from '@/lib/types';
 
@@ -50,7 +50,7 @@ async function sendPush(payload: { title: string; body: string; url: string; tag
 }
 
 // ---- arka plan pipeline: aşama aşama gerçek metriklerle ilerleme yazar ----
-async function processRun(run: Run, buf: Buffer, rules: CalibrationRules, lang: 'tr' | 'en') {
+async function processRun(run: Run, buf: Buffer, rules: CalibrationRules, lang: 'tr' | 'en', autoDetect = false) {
   let stages = run.progress ?? freshStages();
   const push = async () => updateRunMeta(run.id, { progress: stages });
   const t0 = Date.now();
@@ -60,6 +60,16 @@ async function processRun(run: Run, buf: Buffer, rules: CalibrationRules, lang: 
     await push();
 
     const parsed = parseNwd(buf);
+
+    // otomatik tesisat algılama: kural seti dosyanın kendi imzasından seçilir
+    // (hijyenik: TRU-BORE/DIN 11850 · çelik: ASME/WELD NECK/A105)
+    if (autoDetect) {
+      const det = detectVocab(parsed);
+      rules = DEFAULT_RULES[det.vocab];
+      run.vocab = det.vocab;
+      await updateRunMeta(run.id, { vocab: det.vocab });
+      console.log(`[detect] tesisat=${det.vocab} (hijyenik:${det.hygienicHits} çelik:${det.steelHits})`);
+    }
 
     stages = stageSet(stages, 'scan', 'done', { 'veri akışı': parsed.stats.blobCount, 'kayıt': parsed.stats.recordCount });
     stages = stageSet(stages, 'extract', 'done', { 'komponent': parsed.components.length });
@@ -131,7 +141,7 @@ async function processRun(run: Run, buf: Buffer, rules: CalibrationRules, lang: 
 export async function POST(req: NextRequest) {
   try {
     let buf: Buffer;
-    let meta: { projectName: string; vocab: VocabProfileId; calibrationId: string | null; fileName: string };
+    let meta: { projectName: string; vocab: VocabProfileId | 'auto'; calibrationId: string | null; fileName: string };
     let runId = randomUUID();
     let fileSize = 0;
 
@@ -153,11 +163,14 @@ export async function POST(req: NextRequest) {
       fileSize = fileSize || buf.length;
     }
 
-    // kurallar: kalibrasyon > profil varsayılanı
-    let rules = DEFAULT_RULES[meta.vocab] ?? DEFAULT_RULES['steel-plant'];
+    // kurallar: kalibrasyon > açık profil > otomatik algılama (parse sonrası)
+    let autoDetect = meta.vocab === 'auto' || !meta.vocab;
+    let rules = autoDetect
+      ? DEFAULT_RULES['steel-plant'] // geçici — algılama parse'tan sonra kesinleşir
+      : (DEFAULT_RULES[meta.vocab as VocabProfileId] ?? DEFAULT_RULES['steel-plant']);
     if (meta.calibrationId) {
       const cal = (await listCalibrations()).find(c => c.id === meta.calibrationId);
-      if (cal) rules = cal.rules;
+      if (cal) { rules = cal.rules; autoDetect = false; }
     }
 
     const lang = (req.cookies.get('lang')?.value === 'en' ? 'en' : 'tr') as 'tr' | 'en';
@@ -178,7 +191,7 @@ export async function POST(req: NextRequest) {
     await saveRun(run);
 
     // yanıttan SONRA işle — istemci /runs/[id]'de canlı pipeline'ı izler
-    after(() => processRun(run, buf, rules, lang));
+    after(() => processRun(run, buf, rules, lang, autoDetect));
 
     return NextResponse.json({ id: runId, status: 'processing' });
   } catch (e) {

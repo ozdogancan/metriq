@@ -27,7 +27,7 @@ export function UploadZone({ lang, calibrations }: { lang: Lang; calibrations: C
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [projectName, setProjectName] = useState('');
-  const [vocab, setVocab] = useState<VocabProfileId>('steel-plant');
+  const [vocab, setVocab] = useState<VocabProfileId | 'auto'>('auto');
   const [calId, setCalId] = useState('');
 
   async function handleFile(file: File) {
@@ -108,11 +108,12 @@ export function UploadZone({ lang, calibrations }: { lang: Lang; calibrations: C
           <label htmlFor="uz-vocab" className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-muted">
             {tr ? 'Tesisat tipi' : 'System type'}
             <span className="ml-1.5 font-normal normal-case tracking-normal opacity-70">
-              {tr ? '— sayım dilini belirler' : '— sets the counting language'}
+              {tr ? '— dosyadan otomatik algılanır' : '— auto-detected from the file'}
             </span>
           </label>
-          <select id="uz-vocab" value={vocab} onChange={e => setVocab(e.target.value as VocabProfileId)}
+          <select id="uz-vocab" value={vocab} onChange={e => setVocab(e.target.value as VocabProfileId | 'auto')}
             className="panel w-full px-3.5 py-2.5 text-[13px] outline-none focus:border-copper/60">
+            <option value="auto">{tr ? '✦ Otomatik algıla (önerilen)' : '✦ Auto-detect (recommended)'}</option>
             <option value="steel-plant">{t(lang, 'vocab_steel')}</option>
             <option value="hygienic">{t(lang, 'vocab_hygienic')}</option>
           </select>

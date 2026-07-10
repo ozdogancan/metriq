@@ -148,8 +148,13 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
       const orig = byId.get(r.id);
       if (orig && r.edited && orig.code && r.code && orig.code !== r.code) renames[orig.code] = r.code;
     }
+    // hat kapsamından öğren: tüm ana satırları silinen hatlar → kapsam-dışı kuralı
+    const mainBefore = new Set(initialRows.filter(r => r.scope === 'MAIN').map(r => r.line));
+    const mainNow = new Set(rows.filter(r => r.scope === 'MAIN').map(r => r.line));
+    const removedLines = [...mainBefore].filter(l => !mainNow.has(l) && l !== '*' && l !== '?');
+    const excludeLines = [...new Set([...(base?.rules.excludeLines ?? []), ...removedLines])];
     try {
-      const rules = { ...(base?.rules ?? defaultRulesFor(run)), codeRenames: renames };
+      const rules = { ...(base?.rules ?? defaultRulesFor(run)), codeRenames: renames, excludeLines };
       const res = await fetch('/api/calibrations', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -168,9 +173,13 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
       }).catch(() => {});
       setCalName('');
       const learned = Object.keys(renames).length - Object.keys(base?.rules.codeRenames ?? {}).length;
+      const learnedLines = removedLines.length;
+      const parts: string[] = [];
+      if (learned > 0) parts.push(tr ? `${learned} kod eşlemesi` : `${learned} code mapping(s)`);
+      if (learnedLines > 0) parts.push(tr ? `${learnedLines} kapsam-dışı hat` : `${learnedLines} excluded line(s)`);
       toast.success(
         (tr ? 'Kalibrasyon kaydedildi' : 'Calibration saved') +
-        (learned > 0 ? (tr ? ` · ${learned} kod eşlemesi öğrenildi` : ` · learned ${learned} code mapping(s)`) : '')
+        (parts.length ? ` · ${tr ? 'öğrenildi' : 'learned'}: ${parts.join(', ')}` : '')
       );
     } catch (e) {
       toast.error((tr ? 'Kalibrasyon kaydedilemedi: ' : 'Calibration save failed: ') + (e instanceof Error ? e.message : ''));
