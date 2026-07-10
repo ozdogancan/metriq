@@ -76,6 +76,12 @@
 - **Gerekçe:** Popülerlik/bakım/React-19 uyumu web araştırmasıyla doğrulandı (2026-07-10); headless yaklaşım bakır/grafit tasarımı birebir korur.
 - **Sonuç:** Canlı — sıralama + virtualizasyon + zod 400 yolları prod'da test edildi.
 
+## ADR-013 — Cevap-Excel = ground truth ("uydurma yasak" mimarisi)
+- **Tarih:** 2026-07-10
+- **Karar:** Metraj sayfasına "⇪ Cevapla karşılaştır": müşteri cevap Excel'i esnek başlık eşlemeyle (TR/EN) okunur, kod+çap anahtarında (hat adları hariç — adlandırma iki tarafta farklı) bizim MAIN satırlarla karşılaştırılır; doğruluk karnesi (`run.answer` jsonb) + `run_feedback` öğrenme olayı. Tolerans: M ±%2 (min 0.1m), EA birebir. Karşılaştırma YALNIZ ölçer — hiçbir rakamı değiştirmez; düzeltme kullanıcının ekran edit'i + "Kalibrasyon olarak kaydet" yoluyla öğrenilir. /calibrations'taki elle profil oluşturma butonları kaldırıldı (profiller yalnız gerçek metrajlardan doğar).
+- **Gerekçe:** Teklif = ground truth işi; kullanıcının akışı "hızlıca çıktı → cevabı yükle → farkı gör → düzelt → sistem öğrensin". Rakam üretme yetkisi tek kaynakta (deterministik parser) kalmalı.
+- **Sonuç:** Canlı — gerçek 26010 cevabıyla prod E2E: 149 satır parse, %83 eşleşme, farklar bilinen kapsam-dışı hatlarda; karne kalıcı, olay günlükte.
+
 ---
 
 ## Yeni karar şablonu
