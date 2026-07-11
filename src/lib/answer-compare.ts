@@ -5,6 +5,53 @@ import 'server-only';
 import ExcelJS from 'exceljs';
 import type { AnswerDiff, AnswerDiffRow, MtoRow, Unit } from './types';
 
+const MAX_XLSX_ENTRIES = 500;
+const MAX_XLSX_ENTRY_BYTES = 40 * 1024 * 1024;
+const MAX_XLSX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024;
+const EOCD = 0x06054b50;
+const CENTRAL_FILE = 0x02014b50;
+
+function assertSafeXlsxArchive(buf: Buffer): void {
+  if (buf.length < 22 || buf.readUInt16LE(0) !== 0x4b50) {
+    throw new Error('Cevap dosyası geçerli bir XLSX/ZIP arşivi değil.');
+  }
+  let eocd = -1;
+  const floor = Math.max(0, buf.length - 65_557);
+  for (let i = buf.length - 22; i >= floor; i--) {
+    if (buf.readUInt32LE(i) === EOCD) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error('Cevap dosyasının ZIP dizini okunamadı.');
+  const entries = buf.readUInt16LE(eocd + 10);
+  const centralSize = buf.readUInt32LE(eocd + 12);
+  const centralOffset = buf.readUInt32LE(eocd + 16);
+  if (entries === 0 || entries > MAX_XLSX_ENTRIES
+    || centralOffset + centralSize > buf.length) {
+    throw new Error('Cevap dosyası güvenli XLSX arşiv sınırlarını aşıyor.');
+  }
+  let pos = centralOffset;
+  let total = 0;
+  for (let i = 0; i < entries; i++) {
+    if (pos + 46 > buf.length || buf.readUInt32LE(pos) !== CENTRAL_FILE) {
+      throw new Error('Cevap dosyasının ZIP dizini bozuk.');
+    }
+    const flags = buf.readUInt16LE(pos + 8);
+    const compressed = buf.readUInt32LE(pos + 20);
+    const uncompressed = buf.readUInt32LE(pos + 24);
+    const nameLen = buf.readUInt16LE(pos + 28);
+    const extraLen = buf.readUInt16LE(pos + 30);
+    const commentLen = buf.readUInt16LE(pos + 32);
+    if ((flags & 0x1) !== 0 || compressed === 0xffffffff || uncompressed === 0xffffffff
+      || uncompressed > MAX_XLSX_ENTRY_BYTES) {
+      throw new Error('Cevap dosyası desteklenmeyen veya aşırı büyük ZIP girdisi içeriyor.');
+    }
+    total += uncompressed;
+    if (total > MAX_XLSX_UNCOMPRESSED_BYTES) {
+      throw new Error('Cevap dosyasının açılmış boyutu güvenli sınırı aşıyor.');
+    }
+    pos += 46 + nameLen + extraLen + commentLen;
+  }
+}
+
 interface AnswerRow { code: string; s1: number | null; s2: number; qty: number; unit: Unit }
 
 // Başlık eş anlamlıları — müşteri şablonları TR/EN karışık gelebilir
@@ -34,6 +81,7 @@ function cellNum(c: ExcelJS.CellValue): number | null {
 // Sayfalar içinde en çok başlık eşleştiren satırı bul → kolon haritası
 export function parseAnswerXlsx(buf: Buffer): Promise<{ rows: AnswerRow[]; sheet: string }> {
   return (async () => {
+    assertSafeXlsxArchive(buf);
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(buf as unknown as ArrayBuffer);
     let best: { sheet: string; headerRow: number; cols: Record<string, number>; score: number } | null = null;

@@ -3,6 +3,7 @@ import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { t, type Lang, type TKey } from '@/lib/i18n';
 import type { VocabProfileId } from '@/lib/types';
+import { isAllowedNwdSize } from '@/lib/upload-policy';
 
 interface CalOpt { id: string; name: string; vocab: VocabProfileId }
 
@@ -35,6 +36,10 @@ export function UploadZone({ lang, calibrations }: { lang: Lang; calibrations: C
       setError(t(lang, 'err_only_nwd'));
       return;
     }
+    if (!isAllowedNwdSize(file.size)) {
+      setError(t(lang, 'err_file_too_large'));
+      return;
+    }
     setBusy(true); setError('');
     try {
       const meta = {
@@ -46,7 +51,7 @@ export function UploadZone({ lang, calibrations }: { lang: Lang; calibrations: C
         // büyük dosya: imzalı URL ile depoya, sonra referansla işle
         const s = await fetch('/api/upload-url', {
           method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ fileName: file.name }),
+          body: JSON.stringify({ fileName: file.name, fileSize: file.size }),
         });
         if (!s.ok) throw new HttpError(s.status, 'upload-url failed');
         const su = await s.json();

@@ -1,4 +1,5 @@
 import { cookies } from 'next/headers';
+import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { getRun, getRows, getSteel, listCalibrations } from '@/lib/store';
 import type { Lang } from '@/lib/i18n';
@@ -36,9 +37,9 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
             ? 'Dosyayı yeniden yükleyebilir veya farklı bir sözlük profiliyle deneyebilirsin.'
             : 'You can re-upload the file or try a different vocabulary profile.'}
         </p>
-        <a href="/" className="btn btn-primary mt-5 inline-block">
+        <Link href="/" className="btn btn-primary mt-5 inline-block">
           {lang === 'tr' ? '← Yeni metraj' : '← New take-off'}
-        </a>
+        </Link>
       </div>
     );
   }

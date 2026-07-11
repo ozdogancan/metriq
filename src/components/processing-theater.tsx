@@ -193,9 +193,11 @@ function CountUp({ value, locale }: { value: number; locale: string }) {
     // Hareket azaltma tercihi VEYA gizli sekme (rAF durur): doğrudan hedefe atla
     if (typeof window !== 'undefined' &&
         (window.matchMedia('(prefers-reduced-motion: reduce)').matches || document.visibilityState === 'hidden')) {
-      shownRef.current = to;
-      setShown(to);
-      return;
+      const timer = window.setTimeout(() => {
+        shownRef.current = to;
+        setShown(to);
+      }, 0);
+      return () => clearTimeout(timer);
     }
     let raf = 0;
     const t0 = performance.now();

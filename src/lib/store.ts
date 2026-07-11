@@ -5,12 +5,24 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { Run, MtoRow, SteelRow, Calibration } from './types';
 import { isPg, kvGet, kvSet, kvDel, kvList, pgPutFile, pgGetFile, pgDelFiles } from './store-pg';
+import { isSafeNwdFileName, isUuid } from './upload-policy';
 
 const SB_URL = process.env.SUPABASE_URL;
 const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const BUCKET = process.env.SUPABASE_BUCKET || 'models';
+const REST_PAGE_SIZE = 100;
+const MAX_RESULT_ROWS = 10_000;
 
 export const isSupabase = Boolean(SB_URL && SB_KEY);
+
+function isSafeStorageKey(key: unknown): key is string {
+  if (typeof key !== 'string') return false;
+  const slash = key.indexOf('/');
+  return slash > 0
+    && key.indexOf('/', slash + 1) < 0
+    && isUuid(key.slice(0, slash))
+    && isSafeNwdFileName(key.slice(slash + 1));
+}
 
 let sb: SupabaseClient | null = null;
 function client(): SupabaseClient {
@@ -78,6 +90,11 @@ export async function saveRun(run: Run): Promise<void> {
 
 export async function deleteRun(id: string): Promise<void> {
   if (isSupabase) {
+    const run = await getRun(id);
+    if (run && isSafeNwdFileName(run.fileName)) {
+      const { error: storageError } = await client().storage.from(BUCKET).remove([`${id}/${run.fileName}`]);
+      if (storageError) throw storageError;
+    }
     await client().from('mto_rows').delete().eq('run_id', id);
     await client().from('steel_rows').delete().eq('run_id', id);
     await client().from('runs').delete().eq('id', id);
@@ -98,9 +115,17 @@ export async function deleteRun(id: string): Promise<void> {
 // ---------- Rows ----------
 export async function getRows(runId: string): Promise<MtoRow[]> {
   if (isSupabase) {
-    const { data, error } = await client().from('mto_rows').select('*').eq('run_id', runId).order('idx');
-    if (error) throw error;
-    return (data ?? []).map((r: Record<string, unknown>) => ({
+    const all: Record<string, unknown>[] = [];
+    for (let from = 0; from < MAX_RESULT_ROWS; from += REST_PAGE_SIZE) {
+      const { data, error } = await client().from('mto_rows').select('*')
+        .eq('run_id', runId).order('idx').order('id')
+        .range(from, from + REST_PAGE_SIZE - 1);
+      if (error) throw error;
+      all.push(...((data ?? []) as Record<string, unknown>[]));
+      if ((data?.length ?? 0) < REST_PAGE_SIZE) break;
+      if (from + REST_PAGE_SIZE >= MAX_RESULT_ROWS) throw new Error('mto row safety limit exceeded');
+    }
+    return all.map((r: Record<string, unknown>) => ({
       id: r.id as string, line: r.line as string, code: r.code as string, sub: (r.sub as string) ?? '',
       s1: r.s1 as number | null, s2: (r.s2 as number) ?? 0, qty: Number(r.qty), unit: r.unit as 'M' | 'EA',
       remark: (r.remark as string) ?? '', scope: r.scope as 'MAIN' | 'INFO', edited: Boolean(r.edited),
@@ -111,15 +136,12 @@ export async function getRows(runId: string): Promise<MtoRow[]> {
 
 export async function saveRows(runId: string, rows: MtoRow[]): Promise<void> {
   if (isSupabase) {
-    await client().from('mto_rows').delete().eq('run_id', runId);
     const payload = rows.map((r, idx) => ({
-      id: r.id, run_id: runId, idx, line: r.line, code: r.code, sub: r.sub,
+      id: r.id, idx, line: r.line, code: r.code, sub: r.sub,
       s1: r.s1, s2: r.s2, qty: r.qty, unit: r.unit, remark: r.remark, scope: r.scope, edited: r.edited ?? false,
     }));
-    for (let i = 0; i < payload.length; i += 500) {
-      const { error } = await client().from('mto_rows').insert(payload.slice(i, i + 500));
-      if (error) throw error;
-    }
+    const { error } = await client().rpc('replace_mto_rows', { p_run_id: runId, p_rows: payload });
+    if (error) throw error;
     return;
   }
   await writeJson(`rows-${runId}.json`, rows);
@@ -127,8 +149,17 @@ export async function saveRows(runId: string, rows: MtoRow[]): Promise<void> {
 
 export async function getSteel(runId: string): Promise<SteelRow[]> {
   if (isSupabase) {
-    const { data } = await client().from('steel_rows').select('*').eq('run_id', runId).order('length_mm', { ascending: false });
-    return (data ?? []).map((r: Record<string, unknown>) => ({
+    const all: Record<string, unknown>[] = [];
+    for (let from = 0; from < MAX_RESULT_ROWS; from += REST_PAGE_SIZE) {
+      const { data, error } = await client().from('steel_rows').select('*')
+        .eq('run_id', runId).order('length_mm', { ascending: false }).order('id')
+        .range(from, from + REST_PAGE_SIZE - 1);
+      if (error) throw error;
+      all.push(...((data ?? []) as Record<string, unknown>[]));
+      if ((data?.length ?? 0) < REST_PAGE_SIZE) break;
+      if (from + REST_PAGE_SIZE >= MAX_RESULT_ROWS) throw new Error('steel row safety limit exceeded');
+    }
+    return all.map((r: Record<string, unknown>) => ({
       id: r.id as string, profile: r.profile as string, lengthMm: Number(r.length_mm),
       count: Number(r.count), totalKg: Number(r.total_kg),
     }));
@@ -138,13 +169,11 @@ export async function getSteel(runId: string): Promise<SteelRow[]> {
 
 export async function saveSteel(runId: string, rows: SteelRow[]): Promise<void> {
   if (isSupabase) {
-    await client().from('steel_rows').delete().eq('run_id', runId);
-    if (rows.length) {
-      const { error } = await client().from('steel_rows').insert(rows.map(r => ({
-        id: r.id, run_id: runId, profile: r.profile, length_mm: r.lengthMm, count: r.count, total_kg: r.totalKg,
-      })));
-      if (error) throw error;
-    }
+    const payload = rows.map(r => ({
+      id: r.id, profile: r.profile, length_mm: r.lengthMm, count: r.count, total_kg: r.totalKg,
+    }));
+    const { error } = await client().rpc('replace_steel_rows', { p_run_id: runId, p_rows: payload });
+    if (error) throw error;
     return;
   }
   await writeJson(`steel-${runId}.json`, rows);
@@ -184,6 +213,7 @@ export async function deleteCalibration(id: string): Promise<void> {
 
 // ---------- Dosya depolama ----------
 export async function storeFile(runId: string, fileName: string, buf: Buffer): Promise<string> {
+  if (!isUuid(runId) || !isSafeNwdFileName(fileName)) throw new Error('unsafe storage key');
   if (isSupabase) {
     const key = `${runId}/${fileName}`;
     const { error } = await client().storage.from(BUCKET).upload(key, buf, { upsert: true, contentType: 'application/octet-stream' });
@@ -203,6 +233,7 @@ export async function storeFile(runId: string, fileName: string, buf: Buffer): P
 }
 
 export async function fetchStoredFile(key: string): Promise<Buffer> {
+  if (!isSafeStorageKey(key)) throw new Error('unsafe storage key');
   if (isSupabase) {
     const { data, error } = await client().storage.from(BUCKET).download(key);
     if (error || !data) throw error ?? new Error('file not found');
@@ -214,6 +245,7 @@ export async function fetchStoredFile(key: string): Promise<Buffer> {
 
 export async function signedUploadUrl(runId: string, fileName: string): Promise<{ path: string; token: string } | null> {
   if (!isSupabase) return null;
+  if (!isUuid(runId) || !isSafeNwdFileName(fileName)) throw new Error('unsafe storage key');
   const key = `${runId}/${fileName}`;
   const { data, error } = await client().storage.from(BUCKET).createSignedUploadUrl(key);
   if (error || !data) throw error ?? new Error('signed url failed');
@@ -307,6 +339,16 @@ export async function markNotificationsRead(ids: string[] | 'all'): Promise<void
   const all = await readJson<AppNotification[]>('notifications.json', []);
   for (const n of all) if (ids === 'all' || ids.includes(n.id)) n.read = true;
   await writeJson('notifications.json', all);
+}
+
+export async function deleteNotifications(ids: string[] | 'all'): Promise<void> {
+  if (isSupabase) {
+    const q = client().from('notifications').delete();
+    if (ids === 'all') await q.gte('created_at', '1970-01-01'); else await q.in('id', ids);
+    return;
+  }
+  const all = await readJson<AppNotification[]>('notifications.json', []);
+  await writeJson('notifications.json', ids === 'all' ? [] : all.filter(n => !ids.includes(n.id)));
 }
 
 // ---------- Öğrenme günlüğü (ML-uyumlu) ----------

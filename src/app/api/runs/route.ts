@@ -4,14 +4,44 @@ import { randomUUID } from 'node:crypto';
 import {
   listRuns, saveRun, saveRows, saveSteel, storeFile, fetchStoredFile, listCalibrations,
   updateRunMeta, addNotification, listPushSubscriptions, removePushSubscription, resolveStaleRun,
+  isSupabase, getRun,
 } from '@/lib/store';
 import { parseNwd } from '@/lib/parser/nwd';
 import { applyRules, detectVocab } from '@/lib/vocab';
 import { computeComplexity, runAudit, aiEnabled } from '@/lib/ai';
 import { DEFAULT_RULES, STAGE_ORDER, type Run, type StageEvent, type VocabProfileId, type CalibrationRules } from '@/lib/types';
+import {
+  MAX_PROJECT_NAME_CHARS,
+  hasNwdDataMarker,
+  isAllowedNwdSize,
+  isSafeNwdFileName,
+  isUuid,
+} from '@/lib/upload-policy';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
+
+type RunCreateMeta = {
+  projectName: string;
+  vocab: VocabProfileId | 'auto';
+  calibrationId: string | null;
+  fileName: string;
+};
+
+function normalizeMeta(raw: unknown, uploadedFileName?: string): RunCreateMeta | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const input = raw as Record<string, unknown>;
+  const fileName = uploadedFileName ?? input.fileName;
+  if (!isSafeNwdFileName(fileName)) return null;
+  const vocab = input.vocab == null ? 'auto' : input.vocab;
+  if (vocab !== 'auto' && vocab !== 'steel-plant' && vocab !== 'hygienic') return null;
+  const calibrationId = input.calibrationId == null || input.calibrationId === '' ? null : input.calibrationId;
+  if (calibrationId !== null && !isUuid(calibrationId)) return null;
+  const defaultProject = fileName.replace(/\.nwd$/i, '');
+  const projectName = (typeof input.projectName === 'string' ? input.projectName.trim() : defaultProject)
+    .slice(0, MAX_PROJECT_NAME_CHARS) || defaultProject;
+  return { projectName, vocab, calibrationId, fileName };
+}
 
 export async function GET() {
   const runs = await listRuns();
@@ -34,11 +64,12 @@ function stageSet(stages: StageEvent[], key: StageEvent['key'], status: StageEve
 
 async function sendPush(payload: { title: string; body: string; url: string; tag?: string }) {
   const pub = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY, priv = process.env.VAPID_PRIVATE_KEY;
-  if (!pub || !priv) return;
+  const subject = process.env.VAPID_SUBJECT;
+  if (!pub || !priv || !subject) return;
   const subs = await listPushSubscriptions();
   if (!subs.length) return;
   const webpush = (await import('web-push')).default;
-  webpush.setVapidDetails(process.env.VAPID_SUBJECT || 'mailto:canozdogan@outlook.com', pub, priv);
+  webpush.setVapidDetails(subject, pub, priv);
   await Promise.allSettled(subs.map(async s => {
     try {
       await webpush.sendNotification(s as unknown as import('web-push').PushSubscription, JSON.stringify({ ...payload, icon: '/icon.png' }));
@@ -60,6 +91,9 @@ async function processRun(run: Run, buf: Buffer, rules: CalibrationRules, lang: 
     await push();
 
     const parsed = parseNwd(buf);
+    if (parsed.stats.blobCount === 0 || parsed.stats.recordCount === 0) {
+      throw new Error('Geçerli NWD veri akışı bulunamadı.');
+    }
 
     // otomatik tesisat algılama: kural seti dosyanın kendi imzasından seçilir
     // (hijyenik: TRU-BORE/DIN 11850 · çelik: ASME/WELD NECK/A105)
@@ -141,8 +175,8 @@ async function processRun(run: Run, buf: Buffer, rules: CalibrationRules, lang: 
 export async function POST(req: NextRequest) {
   try {
     let buf: Buffer;
-    let meta: { projectName: string; vocab: VocabProfileId | 'auto'; calibrationId: string | null; fileName: string };
-    let runId = randomUUID();
+    let meta: RunCreateMeta;
+    let runId: string = randomUUID();
     let fileSize = 0;
 
     const ctype = req.headers.get('content-type') || '';
@@ -150,17 +184,45 @@ export async function POST(req: NextRequest) {
       const fd = await req.formData();
       const file = fd.get('file') as File | null;
       if (!file) return NextResponse.json({ error: 'file missing' }, { status: 400 });
-      meta = JSON.parse(String(fd.get('meta') || '{}'));
+      if (!isAllowedNwdSize(file.size)) {
+        return NextResponse.json({ error: 'NWD dosyası 50 MB sınırını aşıyor.' }, { status: 413 });
+      }
+      const rawMeta = (() => {
+        try { return JSON.parse(String(fd.get('meta') || '{}')) as unknown; }
+        catch { return null; }
+      })();
+      const normalized = normalizeMeta(rawMeta, file.name);
+      if (!normalized) return NextResponse.json({ error: 'Geçersiz yükleme bilgisi.' }, { status: 400 });
+      meta = normalized;
       buf = Buffer.from(await file.arrayBuffer());
       fileSize = buf.length;
+      if (!hasNwdDataMarker(buf)) {
+        return NextResponse.json({ error: 'Dosya geçerli bir NWD veri akışı içermiyor.' }, { status: 400 });
+      }
       await storeFile(runId, meta.fileName || file.name, buf);
     } else {
-      const body = await req.json();
-      meta = body;
-      runId = body.runId || runId;
-      fileSize = body.fileSize || 0;
-      buf = await fetchStoredFile(body.storagePath);
-      fileSize = fileSize || buf.length;
+      const body = await req.json().catch(() => null) as Record<string, unknown> | null;
+      const normalized = normalizeMeta(body);
+      if (!body || !normalized || !isSupabase || !isUuid(body.runId)) {
+        return NextResponse.json({ error: 'Geçersiz yükleme isteği.' }, { status: 400 });
+      }
+      meta = normalized;
+      runId = body.runId;
+      if (await getRun(runId)) {
+        return NextResponse.json({ error: 'Bu yükleme kimliği zaten kullanılmış.' }, { status: 409 });
+      }
+      const expectedPath = `${runId}/${meta.fileName}`;
+      if (body.storagePath !== expectedPath) {
+        return NextResponse.json({ error: 'Yükleme yolu doğrulanamadı.' }, { status: 400 });
+      }
+      buf = await fetchStoredFile(expectedPath);
+      fileSize = buf.length;
+      if (!isAllowedNwdSize(fileSize)) {
+        return NextResponse.json({ error: 'NWD dosyası 50 MB sınırını aşıyor.' }, { status: 413 });
+      }
+      if (!hasNwdDataMarker(buf)) {
+        return NextResponse.json({ error: 'Dosya geçerli bir NWD veri akışı içermiyor.' }, { status: 400 });
+      }
     }
 
     // kurallar: kalibrasyon > açık profil > otomatik algılama (parse sonrası)
@@ -196,6 +258,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ id: runId, status: 'processing' });
   } catch (e) {
     console.error('run create failed', e);
-    return NextResponse.json({ error: e instanceof Error ? e.message : 'parse failed' }, { status: 500 });
+    return NextResponse.json({ error: 'Yükleme işleme alınamadı.' }, { status: 500 });
   }
 }

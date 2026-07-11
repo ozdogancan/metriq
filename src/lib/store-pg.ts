@@ -17,7 +17,7 @@ function pg(): Pool {
       max: 3, // Fluid instance başına küçük havuz — pooler limitlerini zorlama
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 10_000,
-      ssl: { rejectUnauthorized: false },
+      ssl: { rejectUnauthorized: true },
     });
   }
   return pool;

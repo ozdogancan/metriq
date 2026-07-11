@@ -8,6 +8,7 @@ const archivo = Archivo({ subsets: ['latin', 'latin-ext'], variable: '--font-arc
 const jetbrains = JetBrains_Mono({ subsets: ['latin', 'latin-ext'], variable: '--font-jetbrains' });
 
 export const metadata: Metadata = {
+  metadataBase: new URL('https://metriq-seven.vercel.app'),
   title: 'Metriq — CAD metraj platformu',
   description: "Modelden metraja, saniyeler içinde. NWD yükle, doğrulanmış MTO Excel'ini indir.",
 };

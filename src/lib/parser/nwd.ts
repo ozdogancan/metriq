@@ -1,6 +1,6 @@
 // Metriq — NWD parser sözleşmesi + çekirdek adaptörü.
-// Çekirdek: nwd-core.ts (dwg-takeoff/nwd_mto3.py'nin TS portu; 26010+26113 vakalarında
-// 54/54 regresyon doğrulamalı). Bu dosya çekirdek çıktısını platform sözleşmesine uyarlar.
+// Çekirdek: nwd-core.ts (özel fixture suite ile regresyon doğrulamalı).
+// Bu dosya çekirdek çıktısını platform sözleşmesine uyarlar.
 import { parseNwd as coreParse } from './nwd-core';
 
 export interface ParsedComponent {

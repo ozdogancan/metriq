@@ -95,7 +95,7 @@ function od2npsMetric(od: number): number | null {
 }
 
 // Line-name token filter. NOTE: ^S\d$ deliberately NOT blacklisted —
-// short codes S1..S4 ARE line names in the 26113 case.
+// short codes S1..S4 can be valid line names in hygienic fixtures.
 const LTOKEN = /^[A-Z0-9][A-Z0-9_\-.' ]{3,40}$/;
 const LBLACK = /ASME|DIN |BS EN|SCH |PN \d|B36|A105|A106|A312|A403|A234|WPB|304L|316L|KG|^PL$|^BW$|^FL$|^RF$|^New$|^SHOP$|^FIELD$|^IDEA$|ByLayer|GASKET|FLANGE|PIPE|ELBOW|VALVE|TEE|STUB|^PTFE$|^Typ |ZINC|COATED|BOLT|LEVER|^mm$|^BV$|Continuous|Default/i;
 const SCODE = /^S\d{1,2}$/;
@@ -121,18 +121,32 @@ function okline(x: string | null | undefined): x is string {
 // ---------------------------------------------------------------------------
 
 const SLICE_CAP = 6_000_000;
+const MAX_ZLIB_CANDIDATES = 50_000;
+const MAX_ZLIB_BLOBS = 2_000;
+const MAX_INFLATED_BLOB_BYTES = 16 * 1024 * 1024;
+const MAX_TOTAL_INFLATED_BYTES = 256 * 1024 * 1024;
 
 function inflateAt(data: Buffer, off: number): { out: Buffer; consumed: number } | null {
   const slice = data.subarray(off, off + SLICE_CAP);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const engine: any = new (zlib as any).Inflate({ finishFlush: zlib.constants.Z_SYNC_FLUSH });
+  const engine: any = new (zlib as any).Inflate({
+    finishFlush: zlib.constants.Z_SYNC_FLUSH,
+    maxOutputLength: MAX_INFLATED_BLOB_BYTES,
+  });
   try {
     const out: Buffer = engine._processChunk(slice, zlib.constants.Z_SYNC_FLUSH);
+    if (out.length > MAX_INFLATED_BLOB_BYTES) {
+      throw new Error('NWD içindeki sıkıştırılmış blok güvenli çıktı sınırını aşıyor.');
+    }
     const consumed: number = engine.bytesWritten;
     engine.close();
     return { out, consumed };
-  } catch {
+  } catch (error) {
     try { engine.close(); } catch { /* already closed */ }
+    if ((error as { code?: string }).code === 'ERR_BUFFER_TOO_LARGE'
+      || (error instanceof Error && error.message.includes('güvenli çıktı sınırını'))) {
+      throw new Error('NWD içindeki sıkıştırılmış blok güvenli çıktı sınırını aşıyor.');
+    }
     return null;
   }
 }
@@ -147,17 +161,28 @@ export function findZlibBlobs(data: Buffer): Buffer[] {
       const i = data.indexOf(magic, s);
       if (i < 0) break;
       cand.push(i);
+      if (cand.length > MAX_ZLIB_CANDIDATES) {
+        throw new Error('NWD çok fazla sıkıştırılmış akış adayı içeriyor.');
+      }
       s = i + 1;
     }
   }
   cand.sort((a, b) => a - b);
   const blobs: Buffer[] = [];
   let used = 0;
+  let totalInflated = 0;
   for (const off of cand) {
     if (off < used) continue;
     const r = inflateAt(data, off);
     if (r && r.out.length >= 64) {
+      totalInflated += r.out.length;
+      if (totalInflated > MAX_TOTAL_INFLATED_BYTES) {
+        throw new Error('NWD açılmış veri bütçesini aşıyor.');
+      }
       blobs.push(r.out);
+      if (blobs.length > MAX_ZLIB_BLOBS) {
+        throw new Error('NWD çok fazla veri akışı içeriyor.');
+      }
       used = off + r.consumed;
     }
   }
@@ -304,7 +329,7 @@ function extract(c: RawComp): Item {
       if (d.length === undefined && t >= 6 && v[t - 6] && FNUM.test(v[t - 6] as string)) {
         d.length = v[t - 6] as string;
       }
-      // fallback: if t-6 turned out to be the line, length may be the decimal float at t-2 (26113 shift)
+      // fallback: if t-6 is the line, length may be the decimal float at t-2
       if (d.length === undefined && t >= 2 && v[t - 2] && FNUM.test(v[t - 2] as string) && (v[t - 2] as string).includes('.')) {
         d.length = v[t - 2] as string;
       }
@@ -399,7 +424,7 @@ function extractSteel(blobRecs: Rec[][]): SteelMember[] {
     for (let i = 0; i < v.length; i++) {
       const x = v[i];
       if (!x) continue;
-      // Calibration note (26113): only COMPACT records count as member
+      // Calibration note: only COMPACT records count as a member
       // instances. A blob's first member is additionally echoed through the
       // named/schema block (name='PartSizeLongDesc'); the calibrated reference
       // (49 members / 62.39 m / 636.3 kg) excludes that schema echo.

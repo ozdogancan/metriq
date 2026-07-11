@@ -2,9 +2,16 @@
 import { NextResponse, type NextRequest } from 'next/server';
 
 const SESSION_COOKIE = 'metriq_session';
-// Prod'da AUTH_SECRET zorunlu (fail-closed) — fallback yalnız dev içindir
-const SECRET = process.env.AUTH_SECRET
-  || (process.env.NODE_ENV === 'production' ? '' : 'metriq-dev-secret-degistir');
+const SECRET = process.env.AUTH_SECRET || '';
+
+function activeUsers(): Set<string> {
+  const out = new Set<string>();
+  for (const pair of (process.env.AUTH_USERS || '').split(';')) {
+    const i = pair.indexOf(':');
+    if (i > 0) out.add(pair.slice(0, i).trim().toLowerCase());
+  }
+  return out;
+}
 
 function b64urlToBytes(s: string): Uint8Array {
   const b64 = s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4);
@@ -29,7 +36,7 @@ async function verifyToken(token: string | undefined): Promise<boolean> {
   const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(payload));
   if (bytesToB64url(sig) !== token.slice(dot + 1)) return false;
   const [email, expStr] = payload.split('|');
-  return Boolean(email) && Number(expStr) > Date.now();
+  return Boolean(email) && Number(expStr) > Date.now() && activeUsers().has(email.toLowerCase());
 }
 
 export async function proxy(req: NextRequest) {

@@ -42,12 +42,12 @@ export function NotificationsBell({ lang }: { lang: Lang }) {
   }, []);
 
   useEffect(() => {
-    refresh();
+    const initial = window.setTimeout(() => { void refresh(); }, 0);
     // sekme gizliyken poll atlanır; görünür olunca hemen bir kez çekilir
     const iv = setInterval(() => { if (!document.hidden) refresh(); }, 25_000);
     const onVis = () => { if (!document.hidden) refresh(); };
     document.addEventListener('visibilitychange', onVis);
-    return () => { clearInterval(iv); document.removeEventListener('visibilitychange', onVis); };
+    return () => { clearTimeout(initial); clearInterval(iv); document.removeEventListener('visibilitychange', onVis); };
   }, [refresh]);
 
   // push durumu tespiti
@@ -91,6 +91,26 @@ export function NotificationsBell({ lang }: { lang: Lang }) {
       setUnread(0);
       setItems(prev => prev.map(n => ({ ...n, read: true })));
     }
+  }
+
+  // silme: iyimser güncelle, hata olursa listeyi tazele
+  async function removeOne(id: string) {
+    setItems(prev => prev.filter(n => n.id !== id));
+    const r = await fetch('/api/notifications', {
+      method: 'DELETE', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ids: [id] }),
+    }).catch(() => null);
+    if (!r || !r.ok) refresh();
+  }
+
+  async function removeAll() {
+    setItems([]);
+    setUnread(0);
+    const r = await fetch('/api/notifications', {
+      method: 'DELETE', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ids: 'all' }),
+    }).catch(() => null);
+    if (!r || !r.ok) refresh();
   }
 
   async function enablePush() {
@@ -140,8 +160,15 @@ export function NotificationsBell({ lang }: { lang: Lang }) {
       {open && (
         <div role="menu" aria-label={t(lang, 'notifications')}
           className="panel panel-corners absolute right-0 top-11 z-30 w-[340px] overflow-hidden shadow-2xl shadow-black/30">
-          <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
+          <div className="flex items-center justify-between gap-2 border-b border-line px-4 py-2.5">
             <span className="text-[12px] font-semibold">{t(lang, 'notifications')}</span>
+            {items.length > 0 && (
+              <button onClick={removeAll}
+                className="ml-auto font-data text-[10.5px] tracking-wide text-muted transition-colors hover:text-danger"
+                title={lang === 'tr' ? 'Tüm bildirimleri sil' : 'Delete all notifications'}>
+                {lang === 'tr' ? 'tümünü temizle' : 'clear all'}
+              </button>
+            )}
             {pushState !== 'unsupported' && (
               pushState === 'on' ? (
                 <span className="chip"><span className="chip-dot" style={{ background: 'var(--color-mint)' }} />{lang === 'tr' ? 'masaüstü açık' : 'desktop on'}</span>
@@ -167,16 +194,24 @@ export function NotificationsBell({ lang }: { lang: Lang }) {
               </div>
             )}
             {items.map(n => (
-              <button key={n.id} role="menuitem"
-                onClick={() => { setOpen(false); router.push(n.url); }}
-                className="flex w-full items-start gap-2.5 border-b border-line/50 px-4 py-3 text-left transition-colors last:border-0 hover:bg-copper/5">
-                <span className="chip-dot mt-1.5 shrink-0" style={{ background: KIND_DOT[n.kind] ?? 'var(--color-steel)' }} />
-                <span className="min-w-0 flex-1">
-                  <span className={`block truncate text-[12.5px] leading-snug ${n.read ? 'text-muted' : 'font-semibold'}`}>{n.title}</span>
-                  {n.body && <span className="mt-0.5 block truncate text-[11.5px] text-muted">{n.body}</span>}
-                </span>
-                <span className="shrink-0 font-data text-[10px] text-muted">{timeAgo(n.createdAt, lang)}</span>
-              </button>
+              <div key={n.id} className="group relative border-b border-line/50 last:border-0">
+                <button role="menuitem"
+                  onClick={() => { setOpen(false); router.push(n.url); }}
+                  className="flex w-full items-start gap-2.5 px-4 py-3 pr-9 text-left transition-colors hover:bg-copper/5">
+                  <span className="chip-dot mt-1.5 shrink-0" style={{ background: KIND_DOT[n.kind] ?? 'var(--color-steel)' }} />
+                  <span className="min-w-0 flex-1">
+                    <span className={`block truncate text-[12.5px] leading-snug ${n.read ? 'text-muted' : 'font-semibold'}`}>{n.title}</span>
+                    {n.body && <span className="mt-0.5 block truncate text-[11.5px] text-muted">{n.body}</span>}
+                  </span>
+                  <span className="shrink-0 font-data text-[10px] text-muted">{timeAgo(n.createdAt, lang)}</span>
+                </button>
+                {/* hover'da beliren sil düğmesi — klavyeden de erişilir (focus-visible) */}
+                <button onClick={() => removeOne(n.id)}
+                  aria-label={lang === 'tr' ? `bildirimi sil: ${n.title}` : `delete notification: ${n.title}`}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded px-1.5 py-0.5 text-[13px] leading-none text-muted opacity-0 transition-opacity hover:!text-danger focus-visible:opacity-100 group-hover:opacity-100">
+                  ×
+                </button>
+              </div>
             ))}
           </div>
         </div>

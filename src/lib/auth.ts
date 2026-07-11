@@ -2,11 +2,11 @@
 import 'server-only';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-// Prod'da AUTH_SECRET zorunlu (fail-closed) — fallback yalnız dev içindir
-const SECRET = process.env.AUTH_SECRET
-  || (process.env.NODE_ENV === 'production' ? '' : 'metriq-dev-secret-degistir');
+// AUTH_SECRET every ortamda zorunlu: bilinen bir dev fallback'i imzalı cookie'yi
+// dışarı açılan geliştirme sunucularında forge edilebilir hâle getirirdi.
+const SECRET = process.env.AUTH_SECRET || '';
 export const SESSION_COOKIE = 'metriq_session';
-const MAX_AGE_S = 60 * 60 * 24 * 30; // 30 gün
+const MAX_AGE_S = 60 * 60 * 12; // 12 saat
 
 // Kullanıcılar: AUTH_USERS="email:sifre;email2:sifre2" (env) — yoksa boş (giriş kapalı)
 function users(): Map<string, string> {
@@ -32,7 +32,7 @@ export function verifyCredentials(email: string, password: string): boolean {
 }
 
 export function createSessionToken(email: string): string {
-  const payload = `${email.toLowerCase()}|${Date.now() + MAX_AGE_S * 1000}`;
+  const payload = `${email.trim().toLowerCase()}|${Date.now() + MAX_AGE_S * 1000}`;
   return `${Buffer.from(payload).toString('base64url')}.${sign(payload)}`;
 }
 
@@ -48,13 +48,14 @@ export function verifySessionToken(token: string | undefined): string | null {
   if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
   const [email, expStr] = payload.split('|');
   if (!email || Number(expStr) < Date.now()) return null;
+  if (!users().has(email.toLowerCase())) return null;
   return email;
 }
 
 export const sessionCookieOptions = {
   httpOnly: true as const,
   secure: process.env.NODE_ENV === 'production',
-  sameSite: 'lax' as const,
+  sameSite: 'strict' as const,
   path: '/',
   maxAge: MAX_AGE_S,
 };

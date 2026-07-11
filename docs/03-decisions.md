@@ -25,7 +25,7 @@
 ## ADR-004 — Kalibrasyon profilleri (kural = veri, kod değil)
 - **Tarih:** 2026-07 (geri-doldurma)
 - **Karar:** Metraj konvansiyonları koda gömülmez; bildirimsel `CalibrationRules` (`src/lib/types.ts`) + vocab başına `DEFAULT_RULES` olarak tutulur ve tek noktadan uygulanır (`applyRules`, `src/lib/vocab.ts`).
-- **Gerekçe:** Kapsam/vokabüler müşteriye ve sistem tipine göre değişir (26010 çelik ↔ 26113 hijyenik META-dersi). Öğrenme döngüsü ancak kurallar veri olursa mümkün.
+- **Gerekçe:** Kapsam/vokabüler müşteriye ve sistem tipine göre değişir. Öğrenme döngüsü ancak kurallar veri olursa mümkün.
 - **Sonuç:** Canlı — öğrenme sözleşmesinin temeli (`02-learning.md`).
 
 ## ADR-005 — Görsel/içgörü AI: Gemini
@@ -56,18 +56,18 @@
 - **Tarih:** 2026-07-10
 - **Karar:** Denetim çağrısı `max_tokens: 8000`, `stop_reason === 'max_tokens'` ise tek sefer 16k ile tekrar; promptta "en fazla 15 bulgu, tek cümle" sınırı.
 - **Gerekçe:** Prod'da yanıt tam 4000 tokende kesilip JSON parse'ı düşürüyordu → denetim sessizce null oluyordu (fail-soft doğru çalıştı ama değer kayboldu).
-- **Sonuç:** Canlı — 26113 prod testinde sonnet-5 / komplexity 40 / 6 bulgu + satır işaretleri döndü.
+- **Sonuç:** Canlı — anonimleştirilmiş fixture üzerinde model yönlendirme + satır işaretleri doğrulandı.
 
 ## ADR-010 — Supabase birincil depolama (kendi projesi)
 - **Tarih:** 2026-07-10
-- **Karar:** Evlumba Pro organizasyonunda ayrı `metriq` Supabase projesi (ref `arivwpipfimfmyxeizne`, Frankfurt/eu-central-1, MICRO compute +$10/ay). `migration.sql` uygulandı, private `models` bucket'ı açıldı; `SUPABASE_URL/SERVICE_ROLE_KEY/BUCKET` env'leri prod+dev+lokal. ADR-008 köprüsü otomatik devre dışı (fallback olarak duruyor); eski `metriq` şeması productmanagement DB'sinden düşürüldü.
+- **Karar:** Ayrı bir Frankfurt Supabase projesi birincil depolama oldu. `migration.sql` uygulandı, private `models` bucket'ı açıldı; Supabase env'leri server-only tanımlandı. Proje referansı, organizasyon ve fiyat bilgisi depoda tutulmaz.
 - **Gerekçe:** Kullanıcı talebi (ayrı proje, Pro org); kalıcı depolama + Storage imzalı-URL akışı (>4.5MB dosyalar) ancak gerçek Supabase ile mümkün.
-- **Sonuç:** Canlı — prod E2E (26113): run + AI denetim + bildirim + Excel + learning_events tamamı yeni projede doğrulandı.
+- **Sonuç:** Canlı — anonimleştirilmiş prod smoke testinde run + AI denetim + bildirim + Excel + learning_events doğrulandı.
 
 ## ADR-011 — QA sertleştirme paketi (fail-closed varsayılanı)
 - **Tarih:** 2026-07-10
 - **Karar:** (1) `AUTH_SECRET` prod'da zorunlu — yoksa token üretimi/doğrulaması fail-closed; (2) login'e IP başına 5/dk rate-limit; (3) 15 dk'yı aşan `processing` run'lar watchdog'la `error`a çekilir (`resolveStaleRun`); (4) API gövdeleri doğrulanır (bkz. ADR-012 zod); (5) Excel yalnız `done` run'da (409); (6) sayısal hücre girişleri blur-commit (as-you-type Number() coercion'ı yasak — 12.5→125 hatası).
-- **Gerekçe:** Teklif-kritik platformda sessiz bozulma kabul edilemez; denetim turu (36 ajan) 11 doğrulanmış bulgu çıkardı, tümü bu pakette kapatıldı.
+- **Gerekçe:** Teklif-kritik platformda sessiz bozulma kabul edilemez; doğrulanan QA bulguları bu pakette kapatıldı.
 - **Sonuç:** Canlı — canlı tarayıcı + prod API testleriyle doğrulandı (2026-07-10).
 
 ## ADR-012 — OSS seçimi: TanStack Table + react-virtual + zod + sonner
@@ -80,7 +80,7 @@
 - **Tarih:** 2026-07-10
 - **Karar:** Metraj sayfasına "⇪ Cevapla karşılaştır": müşteri cevap Excel'i esnek başlık eşlemeyle (TR/EN) okunur, kod+çap anahtarında (hat adları hariç — adlandırma iki tarafta farklı) bizim MAIN satırlarla karşılaştırılır; doğruluk karnesi (`run.answer` jsonb) + `run_feedback` öğrenme olayı. Tolerans: M ±%2 (min 0.1m), EA birebir. Karşılaştırma YALNIZ ölçer — hiçbir rakamı değiştirmez; düzeltme kullanıcının ekran edit'i + "Kalibrasyon olarak kaydet" yoluyla öğrenilir. /calibrations'taki elle profil oluşturma butonları kaldırıldı (profiller yalnız gerçek metrajlardan doğar).
 - **Gerekçe:** Teklif = ground truth işi; kullanıcının akışı "hızlıca çıktı → cevabı yükle → farkı gör → düzelt → sistem öğrensin". Rakam üretme yetkisi tek kaynakta (deterministik parser) kalmalı.
-- **Sonuç:** Canlı — gerçek 26010 cevabıyla prod E2E: 149 satır parse, %83 eşleşme, farklar bilinen kapsam-dışı hatlarda; karne kalıcı, olay günlükte.
+- **Sonuç:** Canlı — anonimleştirilmiş cevap fixture'ıyla prod E2E; karne kalıcı, olay günlükte.
 
 ---
 

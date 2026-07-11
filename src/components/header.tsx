@@ -6,19 +6,23 @@ import { usePathname, useRouter } from 'next/navigation';
 import { t, type Lang } from '@/lib/i18n';
 import { NotificationsBell } from '@/components/notifications-bell';
 
+function persistUiCookie(name: 'lang' | 'theme', value: string) {
+  document.cookie = `${name}=${value};path=/;max-age=31536000;samesite=strict`;
+}
+
 export function Header({ lang, theme: initialTheme }: { lang: Lang; theme: 'dark' | 'light' }) {
   const router = useRouter();
   const pathname = usePathname();
   const [theme, setTheme] = useState(initialTheme);
 
   function setLang(l: Lang) {
-    document.cookie = `lang=${l};path=/;max-age=31536000`;
+    persistUiCookie('lang', l);
     router.refresh();
   }
   function toggleTheme() {
     const next = theme === 'dark' ? 'light' : 'dark';
     setTheme(next);
-    document.cookie = `theme=${next};path=/;max-age=31536000`;
+    persistUiCookie('theme', next);
     document.documentElement.dataset.theme = next;
   }
   async function logout() {

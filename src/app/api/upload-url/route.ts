@@ -1,13 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { isSupabase, signedUploadUrl } from '@/lib/store';
+import { isAllowedNwdSize, isSafeNwdFileName } from '@/lib/upload-policy';
 
 export const runtime = 'nodejs';
 
 export async function POST(req: NextRequest) {
   try {
-    const { fileName } = await req.json();
-    if (!fileName) return NextResponse.json({ error: 'fileName required' }, { status: 400 });
+    const body = await req.json().catch(() => null);
+    const fileName = body?.fileName;
+    const fileSize = body?.fileSize;
+    if (!isSafeNwdFileName(fileName)) {
+      return NextResponse.json({ error: 'Geçersiz NWD dosya adı.' }, { status: 400 });
+    }
+    if (!isAllowedNwdSize(fileSize)) {
+      return NextResponse.json({ error: 'NWD dosyası 50 MB sınırını aşıyor.' }, { status: 413 });
+    }
     if (!isSupabase) return NextResponse.json({ mode: 'local' });
     const runId = randomUUID();
     const signed = await signedUploadUrl(runId, fileName);
@@ -23,6 +31,6 @@ export async function POST(req: NextRequest) {
     });
   } catch (e) {
     console.error('upload-url failed', e);
-    return NextResponse.json({ error: e instanceof Error ? e.message : 'failed' }, { status: 500 });
+    return NextResponse.json({ error: 'Yükleme bağlantısı oluşturulamadı.' }, { status: 500 });
   }
 }

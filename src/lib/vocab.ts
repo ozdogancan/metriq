@@ -4,7 +4,7 @@ import type { CalibrationRules, MtoRow, RunTotals, SteelRow, VocabProfileId } fr
 import type { ParsedComponent, ParseResult } from './parser/nwd';
 
 // Tesisat tipini dosyadan algıla — sinyaller iki gerçek vakada ölçüldü (2026-07-10):
-// hijyenik (26113): TRU-BORE=22, DIN 11850 spec'leri; çelik (26010): ASME=540, WELD NECK=124, A105.
+// Hijyenik fixture: TRU-BORE / DIN 11850; çelik fixture: ASME / WELD NECK / A105.
 export function detectVocab(parsed: ParseResult): { vocab: VocabProfileId; hygienicHits: number; steelHits: number } {
   let hyg = 0, steel = 0;
   for (const c of parsed.components) {

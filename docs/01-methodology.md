@@ -1,8 +1,7 @@
 # 01 — Metraj Metodolojisi (NWD, platforma uyarlanmış)
 
-> **Kaynak (tam runbook):** `C:\Users\canoz\dwg-takeoff\METODOLOJI.md` — üç gerçek müşteri
-> vakasıyla doğrulanmış prosedür. Bu dosya onun NWD bölümünün Metriq'e uyarlanmış özetidir.
-> Çelişki durumunda kaynak runbook + `src/lib/types.ts` kazanır.
+> Ayrıntılı runbook ve müşteri fixture'ları özel test deposundadır. Bu dosya NWD
+> bölümünün anonimleştirilmiş Metriq özetidir; sözleşme için `src/lib/types.ts` kazanır.
 
 ## Çıktı sözleşmesi (müşteri formatı — değiştirilmez)
 
@@ -17,7 +16,7 @@
 
 ## Boyut kuralı: OD-çifti (en kritik ders)
 
-1. NWD'deki isimli `Size` alanına **GÜVENİLMEZ** — SCH 40/80 değeri DN sanılır (26010'da 1.5"/3" ~50 m şişti).
+1. NWD'deki isimli `Size` alanına **GÜVENİLMEZ** — SCH 40/80 değeri DN sanılabilir ve miktarı ciddi biçimde şişirebilir.
 2. Doğru boyut = özellik akışındaki **bitişik (OD-float, DN-int) çifti**. Noktasız sayılar dahil (`'73'` → 2.5").
 3. **Tutarlılık filtresi**: OD→NPS tablosu ile DN-int **aynı** boyuta çıkmalı; çıkmıyorsa boyut atanmaz.
 4. İki OD tablosu var, otomatik denenir (`ParsedComponent.metric` bayrağı):
@@ -42,7 +41,7 @@
 **META-KURAL:** kapsam ve vokabüler MÜŞTERİYE ve sistem tipine göre değişir — müşterinin en güncel
 şablonu aynalanır; her şey çıkarılır, hiçbir veri atılmaz (ana liste dışı kalanlar `scope='INFO'`).
 
-| Konu | `steel-plant` (26010 buhar) | `hygienic` (26113 gıda/içki) | İlgili kural alanı |
+| Konu | `steel-plant` | `hygienic` | İlgili kural alanı |
 |---|---|---|---|
 | Kapsam | bulk piping 8 kod: PIPE, 90 BEND, RED TEE, EQ TEE, CON RED, FLANGE(+alt tip), BLIND FLANGE, WELDOLET | her şey ana listede (aşağıdaki farklarla) | — |
 | 45° dirsek | 90 BEND'e birleşir, detay Remark'ta | aynı | `merge45Into90=true` |
@@ -51,7 +50,7 @@
 | Vana/süzgeç | INFO sayfası (`VALVE`/`STRAINER`) | ana listede tek kod `MV` (tip Comments'e) | `includeValvesInMain` |
 | Redüksiyon | `CON RED` (ECC remark'ta) | `CON RED` + `ECC RED` **ayrı kod** | vocab'a gömülü |
 | Conta/cıvata/stub-end | hariç (bilgi) | hariç (bilgi) | `includeFasteners=false` |
-| PIPE net/gross | model NET kesim; müşteri GROSS merkez hattı (~×1.18) | net kesim gerçekle %99.4 uyumlu → 1.0 | `grossPipeFactor` |
+| PIPE net/gross | model NET kesim; müşteri politikası isterse versioned gross katsayısı | net kesim veya müşteri-politikası katsayısı | `grossPipeFactor` |
 | Boyutsuz flanş | — | **eleme yöntemiyle** atanır (hangi boyut eksikse o) | — |
 
 Not: net/gross farkı **evrensel değildir**, takeoff yapana göre değişir → `grossPipeFactor` müşteri başına öğrenilir.

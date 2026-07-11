@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { getRun, getRows, updateRunMeta, addLearningEvents } from '@/lib/store';
 import { parseAnswerXlsx, compareAnswer } from '@/lib/answer-compare';
+import { MAX_ANSWER_XLSX_BYTES } from '@/lib/upload-policy';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -23,6 +24,9 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     if (!file) return NextResponse.json({ error: 'dosya eksik' }, { status: 400 });
     if (!/\.xlsx$/i.test(file.name)) {
       return NextResponse.json({ error: 'Cevap dosyası .xlsx olmalı.' }, { status: 400 });
+    }
+    if (file.size <= 0 || file.size > MAX_ANSWER_XLSX_BYTES) {
+      return NextResponse.json({ error: 'Cevap dosyası 15 MB sınırını aşıyor.' }, { status: 413 });
     }
     const buf = Buffer.from(await file.arrayBuffer());
     const { rows: answerRows, sheet } = await parseAnswerXlsx(buf);
@@ -46,7 +50,9 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     return NextResponse.json({ answer: diff });
   } catch (e) {
     console.error('answer compare failed', e);
-    const msg = e instanceof Error ? e.message : 'karşılaştırma hatası';
+    const msg = e instanceof Error && e.message.startsWith('Cevap dosya')
+      ? e.message
+      : 'Cevap dosyası güvenli biçimde işlenemedi.';
     return NextResponse.json({ error: msg }, { status: 400 });
   }
 }
