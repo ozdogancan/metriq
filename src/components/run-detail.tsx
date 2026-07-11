@@ -1,14 +1,16 @@
 'use client';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
+import { projectedAccuracy, type CalibrationDecisionInput } from '@/lib/calibration-core';
 import {
   createColumnHelper, flexRender, getCoreRowModel, getSortedRowModel,
   useReactTable, type SortingState,
 } from '@tanstack/react-table';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { t, type Lang } from '@/lib/i18n';
-import type { AnswerDiff, Calibration, MtoRow, Run, SteelRow } from '@/lib/types';
+import type { AnswerDiff, AnswerDiffRow, Calibration, MtoRow, Run, SteelRow } from '@/lib/types';
 import { MAX_ANSWER_XLSX_BYTES } from '@/lib/upload-policy';
 
 type Tab = 'rows' | 'steel';
@@ -56,6 +58,7 @@ function NumCell({ value, nullable, positive, label, onCommit }: {
 export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
   lang: Lang; run: Run; initialRows: MtoRow[]; steel: SteelRow[]; calibrations: Calibration[];
 }) {
+  const router = useRouter();
   const [rows, setRows] = useState(initialRows);
   const [tab, setTab] = useState<Tab>('rows');
   const [lineFilter, setLineFilter] = useState('');
@@ -252,8 +255,11 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
         </div>
       </div>
 
-      {/* cevap karşılaştırma karnesi */}
-      {answer && <AnswerPanel lang={lang} answer={answer} />}
+      {/* cevap karşılaştırma karnesi + karar tezgâhı */}
+      {answer && (
+        <AnswerPanel lang={lang} run={run} answer={answer} calibrations={calibrations} dirty={dirty}
+          onApplied={next => { setAnswer(next); router.refresh(); }} />
+      )}
 
       {/* özet kartları */}
       <div className="rise rise-1 grid grid-cols-2 gap-3 sm:grid-cols-5">
@@ -552,20 +558,103 @@ function MtoTable({ lang, rows, onEdit, onRemove, emptyMsg }: {
   );
 }
 
-// ---- cevap karşılaştırma karnesi: müşteri Excel'i = ground truth ----
+// ---- cevap karşılaştırma karnesi + karar tezgâhı: müşteri Excel'i = ground truth ----
 const ANSWER_STATUS: Record<string, { tr: string; en: string; color: string }> = {
   missing: { tr: 'bizde eksik', en: 'missing in ours', color: 'var(--color-danger)' },
   qty_diff: { tr: 'miktar farkı', en: 'qty differs', color: 'var(--color-copper)' },
+  field_diff: { tr: 'çap/kod farkı', en: 'size/code differs', color: 'var(--color-copper)' },
   extra: { tr: 'bizde fazla', en: 'extra in ours', color: 'var(--color-steel)' },
   match: { tr: 'eşleşti', en: 'matched', color: 'var(--color-mint)' },
 };
 
-function AnswerPanel({ lang, answer }: { lang: Lang; answer: AnswerDiff }) {
+type CustomDraft = { code: string; s1: string; s2: string; qty: string; unit: 'M' | 'EA' };
+
+function draftFrom(r: AnswerDiffRow): CustomDraft {
+  const v = r.answerSide?.value ?? r.oursSide?.value;
+  return {
+    code: v?.code ?? r.code, s1: v?.s1 == null ? '' : String(v.s1),
+    s2: String(v?.s2 ?? 0), qty: String(v?.qty ?? (r.answer || r.ours)), unit: v?.unit ?? r.unit,
+  };
+}
+
+function AnswerPanel({ lang, run, answer, calibrations, dirty, onApplied }: {
+  lang: Lang; run: Run; answer: AnswerDiff; calibrations: Calibration[];
+  dirty: boolean; onApplied: (next: AnswerDiff) => void;
+}) {
   const tr = lang === 'tr';
   const [showAll, setShowAll] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [decisions, setDecisions] = useState<Map<string, 'ours' | 'answer' | 'custom'>>(new Map());
+  const [customs, setCustoms] = useState<Map<string, CustomDraft>>(new Map());
+  const targetProfile = calibrations.find(c => c.id === run.calibrationId);
+  const [profileName, setProfileName] = useState(
+    targetProfile?.name ?? (tr ? `${run.projectName} kalibrasyonu` : `${run.projectName} calibration`));
+
   const problems = answer.rows.filter(r => r.status !== 'match');
   const shown = showAll ? problems : problems.slice(0, 12);
-  const accColor = answer.accuracy >= 95 ? 'var(--color-mint)' : answer.accuracy >= 80 ? 'var(--color-copper-bright)' : 'var(--color-danger)';
+  const applied = Boolean(answer.appliedAt);
+  const decidable = !applied && problems.length > 0 && problems.every(r => r.id);
+
+  const choiceOf = (id: string) => decisions.get(id) ?? 'ours';
+  function setChoice(id: string, c: 'ours' | 'answer' | 'custom', row?: AnswerDiffRow) {
+    setDecisions(prev => new Map(prev).set(id, c));
+    if (c === 'custom' && row && !customs.has(id)) {
+      setCustoms(prev => new Map(prev).set(id, draftFrom(row)));
+    }
+  }
+  function setAll(c: 'ours' | 'answer') {
+    setDecisions(new Map(problems.filter(r => r.id).map(r => [r.id!, c])));
+  }
+
+  // canlı öngörü: bu kararlarla karne yüzde kaça çıkar
+  const decisionInputs: CalibrationDecisionInput[] = problems.filter(r => r.id).map(r => {
+    const choice = choiceOf(r.id!);
+    if (choice !== 'custom') return { itemId: r.id!, choice };
+    const d = customs.get(r.id!) ?? draftFrom(r);
+    const s1 = d.s1.trim() === '' ? null : Number.parseFloat(d.s1.replace(',', '.'));
+    return {
+      itemId: r.id!, choice,
+      custom: {
+        code: d.code.trim().toUpperCase(), s1: Number.isFinite(s1 as number) ? s1 : null,
+        s2: Number.parseFloat(d.s2.replace(',', '.')) || 0,
+        qty: Number.parseFloat(d.qty.replace(',', '.')) || 0, unit: d.unit,
+      },
+    };
+  });
+  const projected = decidable ? projectedAccuracy(answer, decisionInputs) : answer.accuracy;
+  const changedCount = decisionInputs.filter(d => d.choice !== 'ours').length;
+
+  async function applyDecisions() {
+    const bad = decisionInputs.find(d => d.choice === 'custom' && (!d.custom || d.custom.qty <= 0 || !d.custom.code));
+    if (bad) { toast.error(tr ? 'Özel değerlerde kod ve pozitif miktar zorunlu.' : 'Custom values need a code and positive qty.'); return; }
+    if (!profileName.trim()) { toast.error(tr ? 'Profil adı boş olamaz.' : 'Profile name required.'); return; }
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/runs/${run.id}/answer/apply`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          comparisonId: answer.id,
+          idempotencyKey: crypto.randomUUID(),
+          ...(targetProfile ? { profileId: targetProfile.id, expectedProfileVersion: targetProfile.version ?? 1 } : { expectedProfileVersion: 0 }),
+          profileName: profileName.trim(),
+          decisions: decisionInputs,
+        }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
+      toast.success(tr
+        ? `Kalibre edildi: %${answer.accuracy} → %${d.answer.accuracy} · ${d.learned.activatedRules} kural öğrenildi`
+        : `Calibrated: ${answer.accuracy}% → ${d.answer.accuracy}% · learned ${d.learned.activatedRules} rule(s)`);
+      onApplied(d.answer as AnswerDiff);
+    } catch (e) {
+      toast.error((tr ? 'Kalibre edilemedi: ' : 'Calibration failed: ') + (e instanceof Error ? e.message : ''));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const accColor = answer.accuracy >= 90 ? 'var(--color-mint)' : answer.accuracy >= 75 ? 'var(--color-copper-bright)' : 'var(--color-danger)';
+  const fieldDiffCount = answer.counts.fieldDiff ?? 0;
   return (
     <div className="rise rise-1 panel panel-corners px-5 py-4">
       <div className="flex flex-wrap items-center gap-3">
@@ -573,12 +662,34 @@ function AnswerPanel({ lang, answer }: { lang: Lang; answer: AnswerDiff }) {
           ⇪ {tr ? 'Cevap karşılaştırması' : 'Answer comparison'}
         </span>
         <span className="num text-[22px] font-bold" style={{ color: accColor }}>%{answer.accuracy}</span>
+        {decidable && changedCount > 0 && projected !== answer.accuracy && (
+          <span className="num text-[13px] text-mint">→ %{projected}</span>
+        )}
+        <span className="font-data text-[10px] text-muted">{tr ? 'hedef' : 'target'} %{answer.targetAccuracy ?? 90}</span>
+        {applied && <span className="chip"><span className="chip-dot" style={{ background: 'var(--color-mint)' }} />{tr ? 'kalibre edildi' : 'calibrated'}{answer.calibrationVersion ? ` · v${answer.calibrationVersion}` : ''}</span>}
         <span className="chip"><span className="chip-dot" style={{ background: 'var(--color-mint)' }} />{answer.counts.matched} {tr ? 'eşleşti' : 'matched'}</span>
         {answer.counts.qtyDiff > 0 && <span className="chip"><span className="chip-dot" style={{ background: 'var(--color-copper)' }} />{answer.counts.qtyDiff} {tr ? 'miktar farkı' : 'qty diff'}</span>}
+        {fieldDiffCount > 0 && <span className="chip"><span className="chip-dot" style={{ background: 'var(--color-copper)' }} />{fieldDiffCount} {tr ? 'çap/kod farkı' : 'size/code diff'}</span>}
         {answer.counts.missing > 0 && <span className="chip"><span className="chip-dot" style={{ background: 'var(--color-danger)' }} />{answer.counts.missing} {tr ? 'bizde eksik' : 'missing'}</span>}
         {answer.counts.extra > 0 && <span className="chip"><span className="chip-dot" style={{ background: 'var(--color-steel)' }} />{answer.counts.extra} {tr ? 'bizde fazla' : 'extra'}</span>}
         <span className="ml-auto font-data text-[10px] text-muted">{answer.fileName}</span>
       </div>
+
+      {/* toplu kararlar */}
+      {decidable && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <button onClick={() => setAll('answer')} className="btn !text-[12px]">
+            ✓ {tr ? 'Cevabın tamamını kabul et' : 'Accept entire answer'}
+          </button>
+          <button onClick={() => setAll('ours')} className="btn btn-ghost !text-[12px]">
+            {tr ? 'Bizimkileri koru' : 'Keep ours'}
+          </button>
+          <span className="font-data text-[10.5px] text-muted">
+            {tr ? 'ya da aşağıda satır satır seç' : 'or decide per row below'}
+          </span>
+        </div>
+      )}
+
       {problems.length > 0 && (
         <div className="mt-3 overflow-auto">
           <table className="mtable">
@@ -588,19 +699,59 @@ function AnswerPanel({ lang, answer }: { lang: Lang; answer: AnswerDiff }) {
                 <th className="!text-right">{tr ? 'çap' : 'size'}</th>
                 <th className="!text-right">{tr ? 'biz' : 'ours'}</th>
                 <th className="!text-right">{tr ? 'cevap' : 'answer'}</th>
+                {decidable && <th>{tr ? 'karar' : 'decision'}</th>}
               </tr>
             </thead>
             <tbody className="font-data">
               {shown.map((r, i) => {
-                const s = ANSWER_STATUS[r.status];
+                const s = ANSWER_STATUS[r.status] ?? ANSWER_STATUS.qty_diff;
+                const c = r.id ? choiceOf(r.id) : 'ours';
+                const d = r.id ? (customs.get(r.id) ?? draftFrom(r)) : draftFrom(r);
                 return (
-                  <tr key={i}>
-                    <td><span className="chip text-[10.5px]"><span className="chip-dot" style={{ background: s.color }} />{tr ? s.tr : s.en}</span></td>
-                    <td>{r.code}</td>
-                    <td className="num !text-right">{r.s1 ?? '?'}{r.s2 ? `x${r.s2}` : ''}″ {r.unit}</td>
-                    <td className="num !text-right">{r.ours}</td>
-                    <td className="num !text-right">{r.answer}</td>
-                  </tr>
+                  <Fragment key={r.id ?? i}>
+                    <tr>
+                      <td><span className="chip text-[10.5px]"><span className="chip-dot" style={{ background: s.color }} />{tr ? s.tr : s.en}</span></td>
+                      <td>{r.code}{r.status === 'field_diff' && r.answerSide && r.oursSide && r.answerSide.value.code !== r.oursSide.value.code ? ` → ${r.answerSide.value.code}` : ''}</td>
+                      <td className="num !text-right">{r.s1 ?? '?'}{r.s2 ? `x${r.s2}` : ''}″ {r.unit}</td>
+                      <td className="num !text-right">{r.ours}</td>
+                      <td className="num !text-right">{r.answer}</td>
+                      {decidable && r.id && (
+                        <td>
+                          <div className="flex gap-1">
+                            {(['ours', 'answer', 'custom'] as const).map(k => (
+                              <button key={k} onClick={() => setChoice(r.id!, k, r)}
+                                className={`rounded border px-2 py-0.5 text-[10.5px] transition-colors ${c === k
+                                  ? 'border-copper/70 bg-copper/15 text-copper-bright'
+                                  : 'border-line text-muted hover:border-copper/40'}`}>
+                                {k === 'ours' ? (tr ? 'Biz' : 'Ours') : k === 'answer' ? (tr ? 'Cevap' : 'Answer') : (tr ? 'Özel' : 'Custom')}
+                              </button>
+                            ))}
+                          </div>
+                        </td>
+                      )}
+                    </tr>
+                    {decidable && r.id && c === 'custom' && (
+                      <tr>
+                        <td colSpan={6} className="!py-2">
+                          <div className="flex flex-wrap items-center gap-2 pl-2 font-data text-[11px]">
+                            <span className="text-muted">{tr ? 'özel:' : 'custom:'}</span>
+                            <input value={d.code} onChange={e => setCustoms(p => new Map(p).set(r.id!, { ...d, code: e.target.value }))}
+                              className="w-32 rounded border border-line bg-transparent px-2 py-1 outline-none focus:border-copper/60" placeholder={tr ? 'kod' : 'code'} />
+                            <input value={d.s1} onChange={e => setCustoms(p => new Map(p).set(r.id!, { ...d, s1: e.target.value }))}
+                              className="w-14 rounded border border-line bg-transparent px-2 py-1 text-right outline-none focus:border-copper/60" placeholder="s1″" inputMode="decimal" />
+                            <input value={d.s2} onChange={e => setCustoms(p => new Map(p).set(r.id!, { ...d, s2: e.target.value }))}
+                              className="w-14 rounded border border-line bg-transparent px-2 py-1 text-right outline-none focus:border-copper/60" placeholder="s2″" inputMode="decimal" />
+                            <input value={d.qty} onChange={e => setCustoms(p => new Map(p).set(r.id!, { ...d, qty: e.target.value }))}
+                              className="w-20 rounded border border-line bg-transparent px-2 py-1 text-right outline-none focus:border-copper/60" placeholder={tr ? 'miktar' : 'qty'} inputMode="decimal" />
+                            <select value={d.unit} onChange={e => setCustoms(p => new Map(p).set(r.id!, { ...d, unit: e.target.value as 'M' | 'EA' }))}
+                              className="rounded border border-line bg-transparent px-2 py-1 outline-none">
+                              <option value="M">M</option><option value="EA">EA</option>
+                            </select>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 );
               })}
             </tbody>
@@ -612,10 +763,37 @@ function AnswerPanel({ lang, answer }: { lang: Lang; answer: AnswerDiff }) {
           )}
         </div>
       )}
+
+      {/* kalibre et ve öğren */}
+      {decidable && (
+        <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-line pt-3.5">
+          <input value={profileName} onChange={e => setProfileName(e.target.value)}
+            className="panel w-56 px-3 py-2 text-[12.5px] outline-none focus:border-copper/60"
+            placeholder={tr ? 'Profil adı' : 'Profile name'} />
+          <button onClick={applyDecisions} disabled={busy || dirty} className="btn btn-primary">
+            {busy ? (tr ? 'Uygulanıyor…' : 'Applying…') : `◈ ${tr ? 'Kalibre et ve öğren' : 'Calibrate & learn'} → %${projected}`}
+          </button>
+          {targetProfile && (
+            <span className="font-data text-[10.5px] text-muted">
+              {tr ? 'profil' : 'profile'}: {targetProfile.name} v{targetProfile.version ?? 1}
+            </span>
+          )}
+          {dirty && (
+            <span className="font-data text-[10.5px] text-danger">
+              {tr ? 'Kaydedilmemiş düzenlemen var — önce kaydet, sonra cevabı yeniden karşılaştır.' : 'You have unsaved edits — save first, then re-compare the answer.'}
+            </span>
+          )}
+        </div>
+      )}
+      {!decidable && !applied && problems.length > 0 && (
+        <p className="mt-2.5 font-data text-[10px] text-muted">
+          {tr ? 'Bu karşılaştırma eski formatta — karar verebilmek için cevabı yeniden yükle.' : 'This comparison is in the old format — re-upload the answer to make decisions.'}
+        </p>
+      )}
       <p className="mt-2.5 font-data text-[10px] text-muted">
         {tr
-          ? 'Karşılaştırma yalnız ölçer — rakamlarına dokunmaz. Farklı satırları ekranda düzeltip "Kalibrasyon olarak kaydet" dersen sistem bu müşteriyi öğrenir.'
-          : 'Comparison only measures — it never changes your numbers. Fix differing rows on screen and "Save as calibration" to teach the system this client.'}
+          ? 'Rakamlar yalnız senin kararınla değişir: Biz = bizim değer kalır · Cevap = müşteri değeri yazılır · Özel = senin yazdığın. Kararların profile işlenir ve bu müşterinin sonraki dosyasına otomatik uygulanır.'
+          : 'Numbers change only by your decision: Ours = keep our value · Answer = take the client\'s · Custom = yours. Decisions are folded into the profile and auto-applied to this client\'s next file.'}
       </p>
     </div>
   );

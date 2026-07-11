@@ -11,13 +11,13 @@ export const runtime = 'nodejs';
 export async function GET() {
   const denied = await requireApiSession();
   if (denied) return denied;
-  const actor = (await getSessionUser())!;
   return NextResponse.json(await listCalibrations());
 }
 
 export async function POST(req: NextRequest) {
   const denied = await requireApiSession();
   if (denied) return denied;
+  const actor = (await getSessionUser())!;
   try {
     const raw = await req.json().catch(() => null);
     if (!raw || typeof raw !== 'object') {

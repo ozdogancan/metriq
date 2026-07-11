@@ -124,12 +124,24 @@ async function processRun(run: Run, buf: Buffer, rules: CalibrationRules, lang: 
 
     // otomatik tesisat algılama: kural seti dosyanın kendi imzasından seçilir
     // (hijyenik: TRU-BORE/DIN 11850 · çelik: ASME/WELD NECK/A105)
+    let appliedProfile: string | null = null;
     if (autoDetect) {
       const det = detectVocab(parsed);
-      rules = DEFAULT_RULES[det.vocab];
       run.vocab = det.vocab;
-      await updateRunMeta(run.id, { vocab: det.vocab });
-      console.log(`[detect] tesisat=${det.vocab} (hijyenik:${det.hygienicHits} çelik:${det.steelHits})`);
+      // Sıfır tık: algılanan tipe ait EN GÜNCEL öğrenilmiş profil otomatik uygulanır —
+      // "sonraki dosyada kurallar kendiliğinden" sözünün karşılığı. Profil yoksa varsayılan.
+      const learned = (await listCalibrations())
+        .filter(c => c.rules.vocab === det.vocab)
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+      if (learned) {
+        rules = learned.rules;
+        run.calibrationId = learned.id;
+        appliedProfile = learned.name;
+      } else {
+        rules = DEFAULT_RULES[det.vocab];
+      }
+      await updateRunMeta(run.id, { vocab: det.vocab, calibrationId: run.calibrationId ?? null });
+      console.log(`[detect] tesisat=${det.vocab} (hijyenik:${det.hygienicHits} çelik:${det.steelHits}) profil=${appliedProfile ?? 'varsayılan'}`);
     }
 
     stages = stageSet(stages, 'scan', 'done', { 'veri akışı': parsed.stats.blobCount, 'kayıt': parsed.stats.recordCount });
@@ -143,7 +155,9 @@ async function processRun(run: Run, buf: Buffer, rules: CalibrationRules, lang: 
 
     const { rows, steel, totals } = applyRules(parsed, rules);
     const main = rows.filter(r => r.scope === 'MAIN');
-    stages = stageSet(stages, 'rules', 'done', { 'satır': main.length, 'boru m': +totals.pipeM.toFixed(1) });
+    stages = stageSet(stages, 'rules', 'done', appliedProfile
+      ? { 'satır': main.length, 'boru m': +totals.pipeM.toFixed(1), 'profil': appliedProfile.slice(0, 24) }
+      : { 'satır': main.length, 'boru m': +totals.pipeM.toFixed(1) });
     stages = stageSet(stages, 'steel', 'done', steel.length
       ? { 'profil': steel.length, 'kg': +totals.steelKg.toFixed(0) }
       : { 'profil': 0 });
