@@ -11,6 +11,7 @@ import { parseNwd } from '@/lib/parser/nwd';
 import { applyRules, detectVocab } from '@/lib/vocab';
 import { computeComplexity, runAudit, aiEnabled } from '@/lib/ai';
 import { DEFAULT_RULES, STAGE_ORDER, type Run, type StageEvent, type VocabProfileId, type CalibrationRules } from '@/lib/types';
+import { langFromCookie } from '@/lib/i18n';
 import {
   MAX_PROJECT_NAME_CHARS,
   hasNwdDataMarker,
@@ -306,7 +307,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const lang = (req.cookies.get('lang')?.value === 'en' ? 'en' : 'tr') as 'tr' | 'en';
+    const lang = langFromCookie(req.cookies.get('lang')?.value);
     const run: Run = {
       id: runId,
       projectName: meta.projectName || meta.fileName,

@@ -1,13 +1,13 @@
 import { cookies } from 'next/headers';
 import { listRuns, isSupabase } from '@/lib/store';
 import { isPg } from '@/lib/store-pg';
-import { t, type Lang } from '@/lib/i18n';
+import { t, langFromCookie } from '@/lib/i18n';
 import { UploadZone } from '@/components/upload-zone';
 import { RunsList } from '@/components/runs-list';
 
 export default async function Dashboard() {
   const store = await cookies();
-  const lang = (store.get('lang')?.value === 'en' ? 'en' : 'tr') as Lang;
+  const lang = langFromCookie(store.get('lang')?.value);
   const runs = await listRuns();
 
   return (

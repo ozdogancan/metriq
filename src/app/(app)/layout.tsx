@@ -1,13 +1,13 @@
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { Header } from '@/components/header';
-import type { Lang } from '@/lib/i18n';
+import { langFromCookie } from '@/lib/i18n';
 import { getSessionUser } from '@/lib/session';
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   if (!(await getSessionUser())) redirect('/login');
   const store = await cookies();
-  const lang = (store.get('lang')?.value === 'en' ? 'en' : 'tr') as Lang;
+  const lang = langFromCookie(store.get('lang')?.value);
   const theme = store.get('theme')?.value === 'light' ? 'light' : 'dark';
   return (
     <>

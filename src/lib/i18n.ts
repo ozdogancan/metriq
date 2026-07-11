@@ -1,6 +1,12 @@
 // Metriq — hafif TR/EN sözlük
 export type Lang = 'tr' | 'en';
 
+// Varsayılan dil İNGİLİZCE; yalnız `lang` cookie açıkça 'tr' ise Türkçe.
+// Header'daki TR/EN düğmeleri cookie'yi yazar → switch çalışmaya devam eder.
+export function langFromCookie(value: string | undefined | null): Lang {
+  return value === 'tr' ? 'tr' : 'en';
+}
+
 const dict = {
   tr: {
     tagline: 'Modelden metraja, saniyeler içinde',

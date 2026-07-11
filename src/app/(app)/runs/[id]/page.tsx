@@ -2,7 +2,7 @@ import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { getRun, getRows, getSteel, listCalibrations } from '@/lib/store';
-import type { Lang } from '@/lib/i18n';
+import { langFromCookie } from '@/lib/i18n';
 import { RunDetail } from '@/components/run-detail';
 import { ProcessingLive } from '@/components/processing-live';
 
@@ -11,7 +11,7 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
   const run = await getRun(id);
   if (!run) notFound();
   const store = await cookies();
-  const lang = (store.get('lang')?.value === 'en' ? 'en' : 'tr') as Lang;
+  const lang = langFromCookie(store.get('lang')?.value);
 
   // işleniyor → canlı pipeline tiyatrosu (poll eder, bitince detaya geçer)
   if (run.status === 'processing') {

@@ -14,7 +14,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   const { id } = await ctx.params;
   const run = await getRun(id);
   if (!run) return NextResponse.json({ error: 'not found' }, { status: 404 });
-  const { lang = 'tr' } = await req.json().catch(() => ({}));
+  const { lang = 'en' } = await req.json().catch(() => ({}));
 
   const [rows, steel] = await Promise.all([getRows(id), getSteel(id)]);
   const main = rows.filter(r => r.scope === 'MAIN');

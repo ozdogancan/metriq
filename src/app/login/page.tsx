@@ -1,14 +1,14 @@
 import { Suspense } from 'react';
 import { cookies } from 'next/headers';
 import Image from 'next/image';
-import type { Lang } from '@/lib/i18n';
+import { langFromCookie } from '@/lib/i18n';
 import { LoginForm } from './login-form';
 
 export const metadata = { title: 'Giriş — Metriq' };
 
 export default async function LoginPage() {
   const store = await cookies();
-  const lang = (store.get('lang')?.value === 'en' ? 'en' : 'tr') as Lang;
+  const lang = langFromCookie(store.get('lang')?.value);
   return (
     <div className="grid min-h-screen lg:grid-cols-[1fr_minmax(420px,44%)]">
       {/* sol: hero görsel (mobilde gizli) */}
