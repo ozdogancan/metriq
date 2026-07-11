@@ -8,11 +8,12 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "npm run test:pipe-sizes && npm run test:answer && npm run test:parser-guards && npm run test:upload-policy",
+    "test": "npm run test:pipe-sizes && npm run test:answer && npm run test:parser-guards && npm run test:upload-policy && npm run test:i18n",
     "test:pipe-sizes": "node scripts/check-pipe-sizes.mjs",
     "test:answer": "node --conditions=react-server scripts/check-answer-compare.mjs",
     "test:parser-guards": "node scripts/check-parser-guards.mjs",
-    "test:upload-policy": "node scripts/check-upload-policy.mjs"
+    "test:upload-policy": "node scripts/check-upload-policy.mjs",
+    "test:i18n": "node scripts/check-i18n.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.110.0",

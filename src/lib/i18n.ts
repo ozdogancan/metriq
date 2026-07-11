@@ -7,7 +7,7 @@ export function langFromCookie(value: string | undefined | null): Lang {
   return value === 'tr' ? 'tr' : 'en';
 }
 
-const dict = {
+export const dict = {
   tr: {
     tagline: 'Modelden metraja, saniyeler içinde',
     upload_title: 'Model yükle',

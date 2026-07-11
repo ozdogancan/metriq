@@ -304,25 +304,28 @@ export function ProcessingTheater(props: {
   const wOf = (k: StageKey) => WEIGHT[k] ?? 1;
   const totalWeight = stages.reduce((s, x) => s + wOf(x.key), 0) || 16;
 
-  // AI denetimi beklerken çubuğu canlı tutmak için hafif tik (400 ms)
-  const [, forceTick] = useState(0);
+  // AI denetimi beklerken çubuk canlı, asimptotik sürünme ile ilerler.
+  // Date.now() render'da SAF DEĞİL (react-hooks/purity) → hesap effect içinde
+  // yapılır, sonuç (0..0.92) state'te tutulur; render yalnız state'i okur.
+  // auditCreep yalnız audit aşaması aktifken OKUNUR; setState sadece asenkron
+  // interval içinde çağrılır (effect içinde senkron setState cascade uyarısı verir).
+  const auditStartedAt = activeStage?.key === 'audit' ? activeStage.startedAt : undefined;
+  const [auditCreep, setAuditCreep] = useState(0);
   useEffect(() => {
-    if (allDone || failed || activeStage?.key !== 'audit') return;
-    const iv = setInterval(() => { if (!document.hidden) forceTick(n => n + 1); }, 400);
+    if (allDone || failed || !auditStartedAt) return;
+    const started = Date.parse(auditStartedAt);
+    const iv = setInterval(() => {
+      if (document.hidden) return;
+      const elapsed = Math.max(0, (Date.now() - started) / 1000);
+      setAuditCreep(0.92 * (1 - Math.exp(-elapsed / 3.2))); // aşama ağırlığının %92'sine yaklaşır
+    }, 400);
     return () => clearInterval(iv);
-  }, [allDone, failed, activeStage?.key]);
+  }, [allDone, failed, auditStartedAt]);
 
   let progressWeight = stages.filter(s => s.status === 'done').reduce((s, x) => s + wOf(x.key), 0);
   if (activeStage) {
     const w = wOf(activeStage.key);
-    if (activeStage.key === 'audit' && activeStage.startedAt) {
-      // geçen süreye göre asimptotik sürünme: aşama ağırlığının %92'sine yaklaşır,
-      // ama bitene dek doldurmaz (donmuş değil, ilerliyor hissi)
-      const elapsed = Math.max(0, (Date.now() - Date.parse(activeStage.startedAt)) / 1000);
-      progressWeight += w * 0.92 * (1 - Math.exp(-elapsed / 3.2));
-    } else {
-      progressWeight += w * 0.5;
-    }
+    progressWeight += activeStage.key === 'audit' ? w * auditCreep : w * 0.5;
   }
   const pct = allDone ? 100 : Math.min(99, Math.round((progressWeight / totalWeight) * 100));
 
