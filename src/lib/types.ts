@@ -47,26 +47,55 @@ export interface Run {
   progress?: StageEvent[];
   ai?: AiAudit | null;
   answer?: AnswerDiff | null; // müşteri cevap Excel'i karşılaştırması (ground truth)
+  rowRevision?: number;       // satırlar her değiştiğinde artar; bayat karşılaştırmayı engeller
+  rowsHash?: string | null;
+  comparisonRevision?: number;
   createdAt: string;
 }
 
 // ---------- Cevap karşılaştırması (müşteri Excel'i = ground truth) ----------
-export type AnswerRowStatus = 'match' | 'qty_diff' | 'missing' | 'extra';
+export interface AnswerValue {
+  code: string;
+  s1: number | null;
+  s2: number;
+  qty: number;
+  unit: Unit;
+}
+
+export interface AnswerSide {
+  value: AnswerValue;
+  rowIds: string[];
+  lines?: string[];
+  subs?: string[];
+}
+
+export type AnswerRowStatus = 'match' | 'qty_diff' | 'field_diff' | 'missing' | 'extra';
 export interface AnswerDiffRow {
+  id?: string;                    // eski kayıtlarla geriye uyum için opsiyonel
   status: AnswerRowStatus;
+  kind?: 'quantity' | 'size' | 'code' | 'missing' | 'extra';
   code: string;
   s1: number | null;
   s2: number;
   unit: Unit;
   ours: number;    // bizim miktar (0 = bizde yok)
   answer: number;  // cevaptaki miktar (0 = cevapta yok)
+  oursSide?: AnswerSide | null;
+  answerSide?: AnswerSide | null;
 }
 export interface AnswerDiff {
+  id?: string;                    // comparison id; eski sonuçlarda bulunmayabilir
+  baseRowsHash?: string;
+  baseRowsRevision?: number;
   fileName: string;
   sheet: string;
   accuracy: number;              // eşleşen / (cevap anahtarları + bizdeki fazla anahtarlar) (%)
-  counts: { matched: number; qtyDiff: number; missing: number; extra: number };
-  rows: AnswerDiffRow[];         // en fazla 200 satır (önce sorunlar)
+  targetAccuracy?: number;
+  projectedAccuracy?: number;
+  appliedAt?: string;
+  calibrationVersion?: number;
+  counts: { matched: number; qtyDiff: number; fieldDiff?: number; missing: number; extra: number };
+  rows: AnswerDiffRow[];
   createdAt: string;
 }
 
@@ -82,6 +111,28 @@ export interface CalibrationRules {
   grossPipeFactor: number;        // 1.0 = net; 1.18 ≈ gross
   codeRenames: Record<string, string>; // öğrenilen kod eşlemeleri
   excludeLines?: string[];        // öğrenilen kapsam-dışı hatlar (satırları INFO'ya iner)
+  itemCorrections?: ItemCorrectionRule[]; // kabul edilmiş cevap/özel değerlerden öğrenilen kesin eşlemeler
+}
+
+export interface ItemCorrectionRule {
+  id: string;
+  match: {
+    code: string;
+    s1: number | null;
+    s2: number;
+    unit: Unit;
+    line?: string;
+    sub?: string;
+  };
+  set: {
+    code?: string;
+    s1?: number | null;
+    s2?: number;
+    unit?: Unit;
+    scope?: 'MAIN' | 'INFO';
+  };
+  source: 'accepted_answer' | 'custom';
+  evidenceCount: number;
 }
 
 export interface Calibration {
@@ -89,6 +140,7 @@ export interface Calibration {
   name: string;
   rules: CalibrationRules;
   learnedFrom: string[]; // run id'leri
+  version?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -104,6 +156,7 @@ export const DEFAULT_RULES: Record<VocabProfileId, CalibrationRules> = {
     grossPipeFactor: 1.0,
     codeRenames: {},
     excludeLines: [],
+    itemCorrections: [],
   },
   hygienic: {
     vocab: 'hygienic',
@@ -115,6 +168,7 @@ export const DEFAULT_RULES: Record<VocabProfileId, CalibrationRules> = {
     grossPipeFactor: 1.0,
     codeRenames: {},
     excludeLines: [],
+    itemCorrections: [],
   },
 };
 

@@ -188,7 +188,7 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
       const res = await fetch('/api/calibrations', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          id: base?.id, name, rules,
+          id: base?.id, expectedVersion: base?.version ?? 0, name, rules,
           learnedFrom: [...new Set([...(base?.learnedFrom ?? []), run.id])],
         }),
       });

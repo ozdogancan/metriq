@@ -76,7 +76,10 @@ const OD2NPS_METRIC: Array<[number, number]> = [
   [70.0, 2.5], [85.0, 3], [104.0, 4], [129.0, 5], [154.0, 6], [204.0, 8], [254.0, 10],
 ];
 function od2npsMetric(od: number): number | null {
-  for (const [o, n] of OD2NPS_METRIC) if (Math.abs(o - od) <= 1.6) return n;
+  // Model toleransları bazı Plant 3D exporter'larında ±2 mm'yi aşıyor.
+  // Bu eşleme aşağıda ayrıca DN↔NPS tutarlılığıyla doğrulandığı için 2.6 mm
+  // false-positive üretmeden 26113'teki 10" FLLB flanşlarını çözüyor.
+  for (const [o, n] of OD2NPS_METRIC) if (Math.abs(o - od) <= 2.6) return n;
   return null;
 }
 
@@ -107,12 +110,12 @@ function okline(x: string | null | undefined): x is string {
 // ---------------------------------------------------------------------------
 
 const SLICE_CAP = 6_000_000;
-// Keep enough headroom for the calibrated fixtures (456 candidates, 170
-// blobs, 2.3 MB largest blob, 20.2 MB total inflated) without letting a
-// crafted file consume most of a small server's memory/CPU budget.
+// NWD contains many unrelated geometry/texture zlib streams. Only streams
+// carrying Plant 3D property markers belong in the parser's retained budget.
 const MAX_ZLIB_CANDIDATES = 5_000;
-const MAX_ZLIB_BLOBS = 500;
-const MAX_INFLATED_BLOB_BYTES = 8 * 1024 * 1024;
+const MAX_SCANNED_ZLIB_STREAMS = 2_048;
+const MAX_RELEVANT_ZLIB_BLOBS = 64;
+const MAX_INFLATED_BLOB_BYTES = 32 * 1024 * 1024;
 const MAX_TOTAL_INFLATED_BYTES = 64 * 1024 * 1024;
 const MAX_RECORDS_PER_BLOB = 75_000;
 const MAX_TOTAL_RECORDS = 300_000;
@@ -147,6 +150,16 @@ function inflateAt(data: Buffer, off: number): { out: Buffer; consumed: number }
 }
 
 const MAGICS = [Buffer.from([0x78, 0x9c]), Buffer.from([0x78, 0xda]), Buffer.from([0x78, 0x01])];
+const PLANT3D_MARKERS = [
+  Buffer.from('PnPGuid'),
+  Buffer.from('SKEY='),
+  Buffer.from('TYPE=PIPE'),
+  Buffer.from('Member '),
+];
+
+function isRelevantPlant3dStream(out: Buffer): boolean {
+  return PLANT3D_MARKERS.some(marker => out.includes(marker));
+}
 
 export function findZlibBlobs(data: Buffer): Buffer[] {
   const cand: number[] = [];
@@ -167,6 +180,7 @@ export function findZlibBlobs(data: Buffer): Buffer[] {
   let used = 0;
   let totalInflated = 0;
   let failedInflates = 0;
+  let scannedStreams = 0;
   const scanStartedAt = Date.now();
   for (const off of cand) {
     if (Date.now() - scanStartedAt > MAX_ZLIB_SCAN_MS) {
@@ -181,16 +195,22 @@ export function findZlibBlobs(data: Buffer): Buffer[] {
       }
       continue;
     }
-    if (r.out.length >= 64) {
+    // A valid outer stream may contain bytes that look like another zlib
+    // header. Advance for every successful inflate, retained or not.
+    used = off + r.consumed;
+    scannedStreams++;
+    if (scannedStreams > MAX_SCANNED_ZLIB_STREAMS) {
+      throw new Error('NWD çok fazla sıkıştırılmış veri akışı içeriyor.');
+    }
+    if (r.out.length >= 64 && isRelevantPlant3dStream(r.out)) {
       totalInflated += r.out.length;
       if (totalInflated > MAX_TOTAL_INFLATED_BYTES) {
         throw new Error('NWD açılmış veri bütçesini aşıyor.');
       }
       blobs.push(r.out);
-      if (blobs.length > MAX_ZLIB_BLOBS) {
-        throw new Error('NWD çok fazla veri akışı içeriyor.');
+      if (blobs.length > MAX_RELEVANT_ZLIB_BLOBS) {
+        throw new Error('NWD çok fazla Plant 3D veri akışı içeriyor.');
       }
-      used = off + r.consumed;
     }
   }
   return blobs;

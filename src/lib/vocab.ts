@@ -40,6 +40,19 @@ export function applyRules(parsed: ParseResult, rules: CalibrationRules): {
   function push(line: string, code: string, sub: string, s1: number | null, s2: number,
     qty: number, unit: 'M' | 'EA', remark: string, scope: 'MAIN' | 'INFO') {
     code = rules.codeRenames[code] ?? code;
+    // Cevap/özel değer kabulünden öğrenilen kurallar profil içinde yalnız tam
+    // çıktı imzasına uygulanır. Hat/alt-tip varsa eşleşmeyi daha da daraltır.
+    for (const correction of rules.itemCorrections ?? []) {
+      const m = correction.match;
+      if (m.code !== code || m.s1 !== s1 || m.s2 !== s2 || m.unit !== unit
+        || (m.line !== undefined && m.line !== line)
+        || (m.sub !== undefined && m.sub !== sub)) continue;
+      if (correction.set.code !== undefined) code = correction.set.code;
+      if (Object.prototype.hasOwnProperty.call(correction.set, 's1')) s1 = correction.set.s1 ?? null;
+      if (correction.set.s2 !== undefined) s2 = correction.set.s2;
+      if (correction.set.unit !== undefined) unit = correction.set.unit;
+      if (correction.set.scope !== undefined) scope = correction.set.scope;
+    }
     const key = [line, code, sub, s1, s2, unit, scope].join('|');
     const ex = agg.get(key);
     if (ex) { ex.qty += qty; if (remark && !ex.remark.includes(remark)) ex.remark = [ex.remark, remark].filter(Boolean).join('; '); }

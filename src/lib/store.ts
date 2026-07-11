@@ -3,7 +3,7 @@ import 'server-only';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import type { Run, MtoRow, SteelRow, Calibration } from './types';
+import type { AnswerDiff, CalibrationRules, Run, RunTotals, MtoRow, SteelRow, Calibration } from './types';
 import { isPg, kvGet, kvSet, kvDel, kvList, pgPutFile, pgGetFile, pgDelFiles } from './store-pg';
 import { isSafeNwdFileName, isUuid, storageKeyName } from './upload-policy';
 
@@ -73,12 +73,16 @@ export async function getRun(id: string): Promise<Run | null> {
 
 export async function saveRun(run: Run): Promise<void> {
   if (isSupabase) {
-    const { error } = await client().from('runs').upsert({
+    const payload: Record<string, unknown> = {
       id: run.id, project_name: run.projectName, file_name: run.fileName, file_size: run.fileSize,
       vocab: run.vocab, calibration_id: run.calibrationId, status: run.status, error: run.error ?? null,
       totals: run.totals, fasteners: run.fasteners, progress: run.progress ?? [], ai: run.ai ?? null,
       answer: run.answer ?? null, created_at: run.createdAt,
-    });
+    };
+    if (run.rowRevision !== undefined) payload.row_revision = run.rowRevision;
+    if (run.rowsHash !== undefined) payload.rows_hash = run.rowsHash;
+    if (run.comparisonRevision !== undefined) payload.comparison_revision = run.comparisonRevision;
+    const { error } = await client().from('runs').upsert(payload);
     if (error) throw error;
     return;
   }
@@ -189,38 +193,266 @@ export async function saveSteel(runId: string, rows: SteelRow[]): Promise<void> 
 // ---------- Calibrations ----------
 export async function listCalibrations(): Promise<Calibration[]> {
   if (isSupabase) {
-    const { data, error } = await client().from('calibrations').select('*').order('updated_at', { ascending: false });
+    const { data, error } = await client().from('calibrations').select('*')
+      .is('archived_at', null).order('updated_at', { ascending: false });
     if (error) throw error;
     return (data ?? []).map((r: Record<string, unknown>) => ({
       id: r.id as string, name: r.name as string, rules: r.rules as Calibration['rules'],
       learnedFrom: (r.learned_from as string[]) ?? [], createdAt: r.created_at as string, updatedAt: r.updated_at as string,
+      version: Number(r.version ?? 1),
     }));
   }
   return readJson<Calibration[]>('calibrations.json', []);
 }
 
-export async function saveCalibration(cal: Calibration): Promise<void> {
+export async function saveCalibration(cal: Calibration, expectedVersion: number, actor: string): Promise<Calibration> {
   if (isSupabase) {
-    const { error } = await client().from('calibrations').upsert({
-      id: cal.id, name: cal.name, rules: cal.rules, learned_from: cal.learnedFrom,
-      created_at: cal.createdAt, updated_at: cal.updatedAt,
+    const { data, error } = await client().rpc('save_calibration_version_v1', {
+      p_calibration_id: cal.id,
+      p_expected_version: expectedVersion,
+      p_name: cal.name,
+      p_rules: cal.rules,
+      p_learned_from: cal.learnedFrom,
+      p_actor_label: actor,
+    });
+    if (error) throw error;
+    return { ...cal, version: Number((data as { version?: number } | null)?.version ?? expectedVersion + 1) };
+  }
+  const cals = await readJson<Calibration[]>('calibrations.json', []);
+  const i = cals.findIndex(c => c.id === cal.id);
+  const actualVersion = i >= 0 ? (cals[i].version ?? 1) : 0;
+  if (actualVersion !== expectedVersion) throw new Error('PROFILE_VERSION_CONFLICT');
+  const saved = { ...cal, version: actualVersion + 1 };
+  if (i >= 0) cals[i] = saved; else cals.push(saved);
+  await writeJson('calibrations.json', cals);
+  return saved;
+}
+
+export async function deleteCalibration(id: string, expectedVersion: number, actor: string): Promise<void> {
+  if (isSupabase) {
+    const { error } = await client().rpc('archive_calibration_v1', {
+      p_calibration_id: id,
+      p_expected_version: expectedVersion,
+      p_actor_label: actor,
     });
     if (error) throw error;
     return;
   }
-  const cals = await readJson<Calibration[]>('calibrations.json', []);
-  const i = cals.findIndex(c => c.id === cal.id);
-  if (i >= 0) cals[i] = cal; else cals.push(cal);
-  await writeJson('calibrations.json', cals);
+  await writeJson('calibrations.json', (await readJson<Calibration[]>('calibrations.json', [])).filter(c => c.id !== id));
 }
 
-export async function deleteCalibration(id: string): Promise<void> {
+export interface AnswerComparisonRecord {
+  id: string;
+  runId: string;
+  baseRowRevision: number;
+  baseRowsHash: string;
+  answerSha256: string;
+  sourceFileName: string;
+  sourceSheet: string;
+  diff: AnswerDiff;
+  createdBy: string;
+}
+
+export async function recordAnswerComparison(input: AnswerComparisonRecord & {
+  expectedComparisonRevision: number;
+  learningEventId: string;
+}): Promise<void> {
   if (isSupabase) {
-    const { error } = await client().from('calibrations').delete().eq('id', id);
+    const { error } = await client().rpc('record_answer_comparison_v1', {
+      p_run_id: input.runId,
+      p_comparison_id: input.id,
+      p_expected_row_revision: input.baseRowRevision,
+      p_expected_comparison_revision: input.expectedComparisonRevision,
+      p_base_rows_hash: input.baseRowsHash,
+      p_answer_sha256: input.answerSha256,
+      p_source_file_name: input.sourceFileName,
+      p_source_sheet: input.sourceSheet,
+      p_diff: input.diff,
+      p_actor_label: input.createdBy,
+      p_learning_event_id: input.learningEventId,
+    });
     if (error) throw error;
     return;
   }
-  await writeJson('calibrations.json', (await readJson<Calibration[]>('calibrations.json', [])).filter(c => c.id !== id));
+  const run = await getRun(input.runId);
+  if (!run) throw new Error('run not found');
+  if ((run.rowRevision ?? 0) !== input.baseRowRevision
+    || (run.comparisonRevision ?? 0) !== input.expectedComparisonRevision
+    || (run.rowsHash && run.rowsHash !== input.baseRowsHash)) {
+    throw new Error('RUN_REVISION_CONFLICT');
+  }
+  const all = await readJson<AnswerComparisonRecord[]>('answer-comparisons.json', []);
+  const existing = all.find(value => value.id === input.id);
+  if (existing && JSON.stringify(existing.diff) !== JSON.stringify(input.diff)) {
+    throw new Error('COMPARISON_ID_REUSED');
+  }
+  if (!existing) {
+    all.push(input);
+    await writeJson('answer-comparisons.json', all);
+  }
+  run.answer = input.diff;
+  run.rowsHash = input.baseRowsHash;
+  run.comparisonRevision = (run.comparisonRevision ?? 0) + 1;
+  await saveRun(run);
+}
+
+export async function getAnswerComparison(id: string): Promise<AnswerComparisonRecord | null> {
+  if (isSupabase) {
+    const { data, error } = await client().from('answer_comparisons').select('*').eq('id', id).maybeSingle();
+    if (error) throw error;
+    if (!data) return null;
+    return {
+      id: data.id as string,
+      runId: data.run_id as string,
+      baseRowRevision: Number(data.base_row_revision),
+      baseRowsHash: data.base_rows_hash as string,
+      answerSha256: data.answer_sha256 as string,
+      sourceFileName: data.source_file_name as string,
+      sourceSheet: data.source_sheet as string,
+      diff: data.diff as AnswerDiff,
+      createdBy: data.created_by as string,
+    };
+  }
+  return (await readJson<AnswerComparisonRecord[]>('answer-comparisons.json', []))
+    .find(value => value.id === id) ?? null;
+}
+
+export interface ApplyAnswerCalibrationInput {
+  runId: string;
+  comparisonId: string;
+  commitId: string;
+  requestHash: string;
+  expectedRowRevision: number;
+  expectedProfileVersion: number;
+  calibrationId: string;
+  calibrationName: string;
+  rules: CalibrationRules;
+  learnedFrom: string[];
+  decisions: unknown[];
+  rows: MtoRow[];
+  rowsAfterHash: string;
+  totals: RunTotals;
+  answerAfter: AnswerDiff;
+  metricsAfter: Record<string, unknown>;
+  actor: string;
+  learningEventId: string;
+}
+
+export interface ApplyAnswerCalibrationResult {
+  commitId: string;
+  calibrationId: string;
+  calibrationVersion: number;
+  rowRevision: number;
+  answer: AnswerDiff;
+  idempotent: boolean;
+}
+
+export async function getCalibrationCommitResult(
+  commitId: string,
+  requestHash: string,
+  runId: string,
+): Promise<ApplyAnswerCalibrationResult | null> {
+  if (isSupabase) {
+    const { data, error } = await client().from('calibration_commits').select('*').eq('id', commitId).maybeSingle();
+    if (error) throw error;
+    if (!data) return null;
+    if (data.request_hash !== requestHash || data.run_id !== runId) throw new Error('IDEMPOTENCY_KEY_REUSED');
+    const run = await getRun(runId);
+    if (!run) throw new Error('run not found');
+    return {
+      commitId,
+      calibrationId: data.calibration_id as string,
+      calibrationVersion: Number(data.new_profile_version),
+      rowRevision: Number(data.new_row_revision),
+      answer: run.answer!,
+      idempotent: true,
+    };
+  }
+  const commits = await readJson<Array<ApplyAnswerCalibrationInput & { result: ApplyAnswerCalibrationResult }>>('calibration-commits.json', []);
+  const existing = commits.find(value => value.commitId === commitId);
+  if (!existing) return null;
+  if (existing.requestHash !== requestHash || existing.runId !== runId) throw new Error('IDEMPOTENCY_KEY_REUSED');
+  return { ...existing.result, idempotent: true };
+}
+
+export async function applyAnswerCalibration(input: ApplyAnswerCalibrationInput): Promise<ApplyAnswerCalibrationResult> {
+  const payloadRows = input.rows.map((row, idx) => ({
+    id: row.id, idx, line: row.line, code: row.code, sub: row.sub,
+    s1: row.s1, s2: row.s2, qty: row.qty, unit: row.unit,
+    remark: row.remark, scope: row.scope, edited: row.edited ?? false,
+  }));
+  if (isSupabase) {
+    const { data, error } = await client().rpc('apply_answer_calibration_v1', {
+      p_run_id: input.runId,
+      p_comparison_id: input.comparisonId,
+      p_commit_id: input.commitId,
+      p_request_hash: input.requestHash,
+      p_expected_row_revision: input.expectedRowRevision,
+      p_expected_profile_version: input.expectedProfileVersion,
+      p_calibration_id: input.calibrationId,
+      p_calibration_name: input.calibrationName,
+      p_rules: input.rules,
+      p_learned_from: input.learnedFrom,
+      p_decisions: input.decisions,
+      p_rows: payloadRows,
+      p_rows_after_hash: input.rowsAfterHash,
+      p_totals: input.totals,
+      p_answer_after: input.answerAfter,
+      p_metrics_after: input.metricsAfter,
+      p_actor_label: input.actor,
+      p_learning_event_id: input.learningEventId,
+    });
+    if (error) throw error;
+    return data as ApplyAnswerCalibrationResult;
+  }
+
+  const commits = await readJson<Array<ApplyAnswerCalibrationInput & { result: ApplyAnswerCalibrationResult }>>('calibration-commits.json', []);
+  const existingCommit = commits.find(value => value.commitId === input.commitId);
+  if (existingCommit) {
+    if (existingCommit.requestHash !== input.requestHash) throw new Error('IDEMPOTENCY_KEY_REUSED');
+    return { ...existingCommit.result, idempotent: true };
+  }
+  const run = await getRun(input.runId);
+  const comparison = await getAnswerComparison(input.comparisonId);
+  if (!run || !comparison || comparison.runId !== input.runId) throw new Error('comparison not found');
+  if ((run.rowRevision ?? 0) !== input.expectedRowRevision
+    || run.rowsHash !== comparison.baseRowsHash || run.answer?.id !== input.comparisonId) {
+    throw new Error('COMPARISON_STALE');
+  }
+  const cals = await readJson<Calibration[]>('calibrations.json', []);
+  const index = cals.findIndex(value => value.id === input.calibrationId);
+  const actualVersion = index >= 0 ? (cals[index].version ?? 1) : 0;
+  if (actualVersion !== input.expectedProfileVersion) throw new Error('PROFILE_VERSION_CONFLICT');
+  const now = new Date().toISOString();
+  const calibration: Calibration = {
+    id: input.calibrationId,
+    name: input.calibrationName,
+    rules: input.rules,
+    learnedFrom: input.learnedFrom,
+    version: actualVersion + 1,
+    createdAt: index >= 0 ? cals[index].createdAt : now,
+    updatedAt: now,
+  };
+  if (index >= 0) cals[index] = calibration; else cals.push(calibration);
+  await writeJson(`rows-${input.runId}.json`, input.rows);
+  await writeJson('calibrations.json', cals);
+  run.totals = input.totals;
+  run.answer = input.answerAfter;
+  run.calibrationId = input.calibrationId;
+  run.rowRevision = (run.rowRevision ?? 0) + 1;
+  run.rowsHash = input.rowsAfterHash;
+  await saveRun(run);
+  const result: ApplyAnswerCalibrationResult = {
+    commitId: input.commitId,
+    calibrationId: input.calibrationId,
+    calibrationVersion: actualVersion + 1,
+    rowRevision: run.rowRevision,
+    answer: input.answerAfter,
+    idempotent: false,
+  };
+  commits.push({ ...input, result });
+  await writeJson('calibration-commits.json', commits);
+  return result;
 }
 
 // ---------- Dosya depolama ----------
@@ -387,6 +619,9 @@ function dbRun(r: Record<string, unknown>): Run {
     totals: r.totals as Run['totals'], fasteners: r.fasteners as Run['fasteners'],
     progress: (r.progress as Run['progress']) ?? [], ai: (r.ai as Run['ai']) ?? null,
     answer: (r.answer as Run['answer']) ?? null,
+    rowRevision: Number(r.row_revision ?? 0),
+    rowsHash: (r.rows_hash as string | null) ?? null,
+    comparisonRevision: Number(r.comparison_revision ?? 0),
     createdAt: r.created_at as string,
   };
 }

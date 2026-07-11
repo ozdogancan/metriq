@@ -18,7 +18,7 @@ const answer = [{ code: 'ELBOW', s1: 2, s2: 0, qty: 1, unit: 'EA' }];
 
 const exact = compareAnswer([row('1', 'ELBOW', 1)], answer, 'answer.xlsx', 'MTO');
 assert.equal(exact.accuracy, 100);
-assert.deepEqual(exact.counts, { matched: 1, qtyDiff: 0, missing: 0, extra: 0 });
+assert.deepEqual(exact.counts, { matched: 1, qtyDiff: 0, fieldDiff: 0, missing: 0, extra: 0 });
 
 const withExtra = compareAnswer(
   [row('1', 'ELBOW', 1), row('2', 'VALVE', 1)],
@@ -32,6 +32,19 @@ assert.equal(withExtra.counts.extra, 1);
 const wrongQuantity = compareAnswer([row('1', 'ELBOW', 2)], answer, 'answer.xlsx', 'MTO');
 assert.equal(wrongQuantity.accuracy, 0);
 assert.equal(wrongQuantity.counts.qtyDiff, 1);
+
+const recoveredSize = compareAnswer(
+  [{ ...row('1', 'BACKING FLANGE', 2), s1: null }],
+  [{ code: 'BACKING FLANGE', s1: 10, s2: 0, qty: 2, unit: 'EA' }],
+  'answer.xlsx',
+  'MTO',
+);
+assert.equal(recoveredSize.rows.length, 1, 'unique missing+extra size pair must be one logical difference');
+assert.equal(recoveredSize.counts.fieldDiff, 1);
+assert.equal(recoveredSize.counts.missing, 0);
+assert.equal(recoveredSize.counts.extra, 0);
+assert.equal(recoveredSize.rows[0].kind, 'size');
+assert.deepEqual(recoveredSize.rows[0].oursSide?.rowIds, ['1']);
 
 const workbook = new ExcelJS.Workbook();
 const sheet = workbook.addWorksheet('MTO');

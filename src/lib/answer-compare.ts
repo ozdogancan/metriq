@@ -3,13 +3,15 @@
 // bizim deterministik motorun satırları ↔ müşterinin cevap dosyası.
 import 'server-only';
 import ExcelJS from 'exceljs';
+import { createHash, randomUUID } from 'node:crypto';
 import { inflateRawSync } from 'node:zlib';
-import type { AnswerDiff, AnswerDiffRow, MtoRow, Unit } from './types';
+import { asmeOdToNps, dnToNps } from './pipe-sizes.ts';
+import type { AnswerDiff, AnswerDiffRow, AnswerSide, AnswerValue, MtoRow, Unit } from './types';
 
 const MAX_XLSX_ENTRIES = 128;
 const MAX_XLSX_ENTRY_BYTES = 4 * 1024 * 1024;
 const MAX_XLSX_UNCOMPRESSED_BYTES = 16 * 1024 * 1024;
-const MAX_XLSX_WORKSHEETS = 12;
+const MAX_XLSX_WORKSHEETS = 24;
 const MAX_WORKSHEET_ROWS = 5_000;
 const MAX_WORKSHEET_COLUMNS = 64;
 const MAX_WORKBOOK_ROWS = 10_000;
@@ -111,15 +113,17 @@ function assertSafeXlsxArchive(buf: Buffer): void {
   }
 }
 
-interface AnswerRow { code: string; s1: number | null; s2: number; qty: number; unit: Unit }
+export interface AnswerRow { code: string; s1: number | null; s2: number; qty: number; unit: Unit }
 
 // Başlık eş anlamlıları — müşteri şablonları TR/EN karışık gelebilir
 const HEADERS: Record<string, RegExp> = {
-  code: /material\s*code|malzeme\s*kodu|^kalem$|^kod$/i,
+  code: /material\s*code|malzeme\s*kodu|^description\s*\(\s*1\s*\)$|^kalem$|^kod$/i,
   s1in: /size\s*1.*(inch|inç|")|çap\s*1|^size1"?$/i,
   s2in: /size\s*2.*(inch|inç|")|çap\s*2|^size2"?$/i,
-  qty: /^quantity$|^miktar$|adet-?boy|^qty$/i,
-  unit: /qty\.?\s*units?|^birim$|^units?$/i,
+  s1mm: /size\s*1.*(?:\(\s*mm\s*\)|\bmm\b)|çap\s*1.*\bmm\b/i,
+  s2mm: /size\s*2.*(?:\(\s*mm\s*\)|\bmm\b)|çap\s*2.*\bmm\b/i,
+  qty: /^(?:total\s+)?quantity$|^miktar$|adet-?boy|^qty\.?$/i,
+  unit: /qty\.?\s*units?|unit\s*of\s*measure|^birim$|^units?$/i,
 };
 
 function cellText(c: ExcelJS.CellValue): string {
@@ -131,10 +135,31 @@ function cellText(c: ExcelJS.CellValue): string {
   return String(c);
 }
 function cellNum(c: ExcelJS.CellValue): number | null {
-  const t = cellText(c).trim().replace(',', '.');
-  if (t === '' || t === '?') return null;
+  const t = cellText(c).trim().replace(',', '.').replace(/[″”"]/g, '').trim();
+  if (t === '' || t === '?' || /^(?:n\/?a|-+)$/i.test(t)) return null;
+  const mixed = t.match(/^(\d+)\s+(\d+)\/(\d+)$/);
+  if (mixed) return Number(mixed[1]) + Number(mixed[2]) / Number(mixed[3]);
+  const fraction = t.match(/^(\d+)\/(\d+)$/);
+  if (fraction) return Number(fraction[1]) / Number(fraction[2]);
   const n = Number.parseFloat(t);
   return Number.isFinite(n) ? n : null;
+}
+
+const HYGIENIC_OD_TO_NPS: Array<[number, number]> = [
+  [19, 0.5], [23, 0.75], [29, 1], [35, 1.25], [41, 1.5], [53, 2],
+  [70, 2.5], [85, 3], [104, 4], [129, 5], [154, 6], [204, 8], [254, 10],
+];
+
+function millimetresToNps(mm: number | null): number | null {
+  if (mm == null) return null;
+  const dn = dnToNps(Math.round(mm));
+  if (dn != null) return dn;
+  let closest: [number, number] | null = null;
+  for (const candidate of HYGIENIC_OD_TO_NPS) {
+    if (!closest || Math.abs(candidate[0] - mm) < Math.abs(closest[0] - mm)) closest = candidate;
+  }
+  if (closest && Math.abs(closest[0] - mm) <= 1.6) return closest[1];
+  return asmeOdToNps(mm);
 }
 
 function assertSafeWorkbookShape(wb: ExcelJS.Workbook): void {
@@ -182,99 +207,245 @@ export function parseAnswerXlsx(buf: Buffer): Promise<{ rows: AnswerRow[]; sheet
     let best: { sheet: string; headerRow: number; cols: Record<string, number>; score: number } | null = null;
 
     for (const ws of wb.worksheets) {
-      for (let r = 1; r <= Math.min(ws.rowCount, 12); r++) {
+      for (let r = 1; r <= Math.min(ws.rowCount, 20); r++) {
         const row = ws.getRow(r);
         const cols: Record<string, number> = {};
         let score = 0;
         row.eachCell({ includeEmpty: false }, (cell, colNo) => {
-          const txt = cellText(cell.value).trim();
+          const txt = cellText(cell.value).trim().replace(/\s+/g, ' ');
           for (const [key, re] of Object.entries(HEADERS)) {
-            if (cols[key] == null && re.test(txt)) { cols[key] = colNo; score++; }
+            if (re.test(txt) && (cols[key] == null || /^s[12](?:in|mm)$/.test(key))) {
+              if (cols[key] == null) score++;
+              cols[key] = colNo;
+            }
           }
         });
-        if (score >= 3 && cols.code != null && cols.qty != null && (!best || score > best.score)) {
-          best = { sheet: ws.name, headerRow: r, cols, score };
+        const rank = score
+          + (cols.s1in != null ? 4 : 0)
+          + (cols.s1mm != null ? 2 : 0)
+          + (cols.unit != null ? 1 : 0)
+          + (/^mto$/i.test(ws.name) ? 4 : /pricing/i.test(ws.name) ? 2 : 0);
+        if (score >= 2 && cols.code != null && cols.qty != null && (!best || rank > best.score)) {
+          best = { sheet: ws.name, headerRow: r, cols, score: rank };
         }
       }
     }
-    if (!best) throw new Error('Cevap dosyasında tanınan başlık satırı bulunamadı (Material Code / Quantity / Size 1 (inch) beklenir).');
+    if (!best) throw new Error('Cevap dosyasında tanınan başlık satırı bulunamadı (Material Code / Quantity / Size 1 beklenir).');
 
     const ws = wb.getWorksheet(best.sheet)!;
     const rows: AnswerRow[] = [];
     for (let r = best.headerRow + 1; r <= ws.rowCount; r++) {
       const row = ws.getRow(r);
-      const code = cellText(row.getCell(best.cols.code).value).trim().toUpperCase();
+      const code = cellText(row.getCell(best.cols.code).value).trim().toUpperCase().replace(/\s+/g, ' ');
       if (!code || /^toplam|^total/i.test(code)) continue;
       const qty = cellNum(row.getCell(best.cols.qty).value);
-      if (qty == null || qty === 0) continue;
-      const s1 = best.cols.s1in != null ? cellNum(row.getCell(best.cols.s1in).value) : null;
-      const s2 = best.cols.s2in != null ? (cellNum(row.getCell(best.cols.s2in).value) ?? 0) : 0;
+      if (qty == null || qty <= 0) continue;
+      const s1In = best.cols.s1in != null ? cellNum(row.getCell(best.cols.s1in).value) : null;
+      const s2In = best.cols.s2in != null ? cellNum(row.getCell(best.cols.s2in).value) : null;
+      const s1Mm = best.cols.s1mm != null ? cellNum(row.getCell(best.cols.s1mm).value) : null;
+      const s2Mm = best.cols.s2mm != null ? cellNum(row.getCell(best.cols.s2mm).value) : null;
+      const s1 = s1In ?? millimetresToNps(s1Mm);
+      const s2 = s2In ?? millimetresToNps(s2Mm) ?? 0;
       const unitRaw = best.cols.unit != null ? cellText(row.getCell(best.cols.unit).value).trim().toUpperCase() : '';
-      const unit: Unit = /^M(T|ETRE)?$/.test(unitRaw) || (!unitRaw && code === 'PIPE') ? 'M' : 'EA';
+      const unit: Unit = /^(?:M|MT|MTR|METRE|METRES|LM)$/.test(unitRaw) || (!unitRaw && code === 'PIPE') ? 'M' : 'EA';
       rows.push({ code, s1, s2, qty, unit });
     }
     return { rows, sheet: best.sheet };
   })();
 }
 
-// Kod+çap düzeyinde karşılaştır (hat adları müşteri/model arasında değişir — anahtara girmez)
-export function compareAnswer(ours: MtoRow[], answer: AnswerRow[], fileName: string, sheet: string): AnswerDiff {
-  const key = (r: { code: string; s1: number | null; s2: number; unit: Unit }) =>
-    `${r.code}|${r.s1 == null ? '?' : Math.round(r.s1 * 100) / 100}|${Math.round(r.s2 * 100) / 100}|${r.unit}`;
+const MAX_COMPARISON_ITEMS = 1_000;
+const round3 = (n: number) => Math.round(n * 1000) / 1000;
+const normCode = (code: string) => code.trim().toUpperCase().replace(/\s+/g, ' ');
+const normSize = (size: number | null) => size == null ? '?' : String(Math.round(size * 1000) / 1000);
+const valueKey = (r: Pick<AnswerValue, 'code' | 's1' | 's2' | 'unit'>) =>
+  `${normCode(r.code)}|${normSize(r.s1)}|${normSize(r.s2)}|${r.unit}`;
 
-  const oursAgg = new Map<string, { qty: number; r: { code: string; s1: number | null; s2: number; unit: Unit } }>();
-  for (const r of ours.filter(x => x.scope === 'MAIN')) {
-    const k = key(r);
-    const e = oursAgg.get(k);
-    if (e) e.qty += r.qty; else oursAgg.set(k, { qty: r.qty, r });
+interface OursAggregate {
+  value: AnswerValue;
+  rowIds: string[];
+  lines: Set<string>;
+  subs: Set<string>;
+}
+
+interface AnswerAggregate { value: AnswerValue }
+
+function qtyMatches(a: AnswerValue, b: AnswerValue): boolean {
+  const tolerance = b.unit === 'M' ? Math.max(0.1, Math.abs(b.qty) * 0.02) : 0.001;
+  return Math.abs(a.qty - b.qty) <= tolerance;
+}
+
+function sameSizes(a: AnswerValue, b: AnswerValue): boolean {
+  return a.s1 === b.s1 && Math.abs(a.s2 - b.s2) <= 0.001;
+}
+
+function logicalPairKind(ours: AnswerValue, answer: AnswerValue): 'size' | 'code' | null {
+  if (ours.unit !== answer.unit || !qtyMatches(ours, answer)) return null;
+  const codeSame = normCode(ours.code) === normCode(answer.code);
+  const sizesEqual = sameSizes(ours, answer);
+  if (codeSame && !sizesEqual) return 'size';
+  if (!codeSame && sizesEqual) return 'code';
+  return null;
+}
+
+function side(aggregate: OursAggregate | AnswerAggregate | undefined): AnswerSide | null {
+  if (!aggregate) return null;
+  if ('rowIds' in aggregate) {
+    return {
+      value: { ...aggregate.value, qty: round3(aggregate.value.qty) },
+      rowIds: [...aggregate.rowIds],
+      lines: [...aggregate.lines].sort(),
+      subs: [...aggregate.subs].sort(),
+    };
   }
-  const ansAgg = new Map<string, { qty: number; r: AnswerRow }>();
-  for (const r of answer) {
-    const k = key(r);
-    const e = ansAgg.get(k);
-    if (e) e.qty += r.qty; else ansAgg.set(k, { qty: r.qty, r });
-  }
+  return { value: { ...aggregate.value, qty: round3(aggregate.value.qty) }, rowIds: [] };
+}
 
-  const rows: AnswerDiffRow[] = [];
-  let matched = 0, qtyDiff = 0, missing = 0, extra = 0;
+function diffId(status: string, oursKey: string | null, answerKey: string | null): string {
+  return `d-${createHash('sha256').update(`${status}\0${oursKey ?? ''}\0${answerKey ?? ''}`).digest('hex').slice(0, 24)}`;
+}
 
-  for (const [k, a] of ansAgg) {
-    const o = oursAgg.get(k);
-    if (!o) {
-      missing++;
-      rows.push({ status: 'missing', code: a.r.code, s1: a.r.s1, s2: a.r.s2, unit: a.r.unit, ours: 0, answer: round3(a.qty) });
-      continue;
-    }
-    const tol = a.r.unit === 'M' ? Math.max(0.1, a.qty * 0.02) : 0.001;
-    if (Math.abs(o.qty - a.qty) <= tol) {
-      matched++;
-      rows.push({ status: 'match', code: a.r.code, s1: a.r.s1, s2: a.r.s2, unit: a.r.unit, ours: round3(o.qty), answer: round3(a.qty) });
-    } else {
-      qtyDiff++;
-      rows.push({ status: 'qty_diff', code: a.r.code, s1: a.r.s1, s2: a.r.s2, unit: a.r.unit, ours: round3(o.qty), answer: round3(a.qty) });
-    }
-  }
-  for (const [k, o] of oursAgg) {
-    if (!ansAgg.has(k)) {
-      extra++;
-      rows.push({ status: 'extra', code: o.r.code, s1: o.r.s1, s2: o.r.s2, unit: o.r.unit, ours: round3(o.qty), answer: 0 });
-    }
-  }
-
-  // önce sorunlar (missing → qty_diff → extra → match), sonra kod adı
-  const order: Record<string, number> = { missing: 0, qty_diff: 1, extra: 2, match: 3 };
-  rows.sort((a, b) => order[a.status] - order[b.status] || a.code.localeCompare(b.code) || (b.s1 ?? -1) - (a.s1 ?? -1));
-
-  // Every unmatched key counts, including rows our engine invented. Using only
-  // the answer-set size could report 100% even while exporting extra material.
-  const evaluatedKeys = ansAgg.size + extra;
+function makeDiffRow(
+  status: AnswerDiffRow['status'],
+  kind: AnswerDiffRow['kind'],
+  ours: OursAggregate | undefined,
+  answer: AnswerAggregate | undefined,
+  oursKey: string | null,
+  answerKey: string | null,
+): AnswerDiffRow {
+  const display = answer?.value ?? ours!.value;
   return {
-    fileName, sheet,
-    accuracy: evaluatedKeys ? Math.round((matched / evaluatedKeys) * 1000) / 10 : 0,
-    counts: { matched, qtyDiff, missing, extra },
-    rows: rows.slice(0, 200),
-    createdAt: new Date().toISOString(),
+    id: diffId(status, oursKey, answerKey),
+    status,
+    kind,
+    code: display.code,
+    s1: display.s1,
+    s2: display.s2,
+    unit: display.unit,
+    ours: round3(ours?.value.qty ?? 0),
+    answer: round3(answer?.value.qty ?? 0),
+    oursSide: side(ours),
+    answerSide: side(answer),
   };
 }
 
-const round3 = (n: number) => Math.round(n * 1000) / 1000;
+export function hashMtoRows(rows: MtoRow[]): string {
+  const canonical = rows.map(row => ({
+    id: row.id, line: row.line, code: row.code, sub: row.sub, s1: row.s1, s2: row.s2,
+    qty: round3(row.qty), unit: row.unit, remark: row.remark, scope: row.scope,
+  })).sort((a, b) => a.id.localeCompare(b.id));
+  return createHash('sha256').update(JSON.stringify(canonical)).digest('hex');
+}
+
+// Exact anahtarları ölç; kalan missing+extra çiftlerini yalnız benzersiz ve
+// miktarı aynıysa tek mantıksal çap/kod farkına dönüştür.
+export function compareAnswer(
+  ours: MtoRow[],
+  answer: AnswerRow[],
+  fileName: string,
+  sheet: string,
+  options: { comparisonId?: string; baseRowsRevision?: number } = {},
+): AnswerDiff {
+  const oursAgg = new Map<string, OursAggregate>();
+  for (const row of ours.filter(value => value.scope === 'MAIN')) {
+    const key = valueKey(row);
+    const existing = oursAgg.get(key);
+    if (existing) {
+      existing.value.qty += row.qty;
+      existing.rowIds.push(row.id);
+      existing.lines.add(row.line);
+      existing.subs.add(row.sub);
+    } else {
+      oursAgg.set(key, {
+        value: { code: normCode(row.code), s1: row.s1, s2: row.s2, qty: row.qty, unit: row.unit },
+        rowIds: [row.id], lines: new Set([row.line]), subs: new Set([row.sub]),
+      });
+    }
+  }
+  const answerAgg = new Map<string, AnswerAggregate>();
+  for (const row of answer) {
+    const key = valueKey(row);
+    const existing = answerAgg.get(key);
+    if (existing) existing.value.qty += row.qty;
+    else answerAgg.set(key, { value: { ...row, code: normCode(row.code) } });
+  }
+
+  const rows: AnswerDiffRow[] = [];
+  const exactKeys = new Set<string>();
+  let matched = 0, qtyDiff = 0, fieldDiff = 0, missing = 0, extra = 0;
+
+  for (const [key, expected] of answerAgg) {
+    const actual = oursAgg.get(key);
+    if (!actual) continue;
+    exactKeys.add(key);
+    if (qtyMatches(actual.value, expected.value)) {
+      matched++;
+      rows.push(makeDiffRow('match', 'quantity', actual, expected, key, key));
+    } else {
+      qtyDiff++;
+      rows.push(makeDiffRow('qty_diff', 'quantity', actual, expected, key, key));
+    }
+  }
+
+  const unmatchedOurs = [...oursAgg].filter(([key]) => !exactKeys.has(key));
+  const unmatchedAnswers = [...answerAgg].filter(([key]) => !exactKeys.has(key));
+  const answerCandidates = new Map<string, Array<{ oursKey: string; kind: 'size' | 'code' }>>();
+  const oursCandidates = new Map<string, string[]>();
+  for (const [answerKey, expected] of unmatchedAnswers) {
+    for (const [oursKey, actual] of unmatchedOurs) {
+      const kind = logicalPairKind(actual.value, expected.value);
+      if (!kind) continue;
+      const list = answerCandidates.get(answerKey) ?? [];
+      list.push({ oursKey, kind });
+      answerCandidates.set(answerKey, list);
+      const reverse = oursCandidates.get(oursKey) ?? [];
+      reverse.push(answerKey);
+      oursCandidates.set(oursKey, reverse);
+    }
+  }
+
+  const pairedOurs = new Set<string>();
+  const pairedAnswers = new Set<string>();
+  for (const [answerKey, candidates] of answerCandidates) {
+    if (candidates.length !== 1) continue;
+    const candidate = candidates[0];
+    if ((oursCandidates.get(candidate.oursKey)?.length ?? 0) !== 1) continue;
+    const actual = oursAgg.get(candidate.oursKey)!;
+    const expected = answerAgg.get(answerKey)!;
+    pairedOurs.add(candidate.oursKey);
+    pairedAnswers.add(answerKey);
+    fieldDiff++;
+    rows.push(makeDiffRow('field_diff', candidate.kind, actual, expected, candidate.oursKey, answerKey));
+  }
+
+  for (const [key, expected] of unmatchedAnswers) {
+    if (pairedAnswers.has(key)) continue;
+    missing++;
+    rows.push(makeDiffRow('missing', 'missing', undefined, expected, null, key));
+  }
+  for (const [key, actual] of unmatchedOurs) {
+    if (pairedOurs.has(key)) continue;
+    extra++;
+    rows.push(makeDiffRow('extra', 'extra', actual, undefined, key, null));
+  }
+
+  if (rows.length > MAX_COMPARISON_ITEMS) {
+    throw new Error('Cevap dosyası karşılaştırma için çok fazla benzersiz kalem içeriyor.');
+  }
+  const order: Record<AnswerDiffRow['status'], number> = { field_diff: 0, qty_diff: 1, missing: 2, extra: 3, match: 4 };
+  rows.sort((a, b) => order[a.status] - order[b.status]
+    || a.code.localeCompare(b.code) || (b.s1 ?? -1) - (a.s1 ?? -1) || (a.id ?? '').localeCompare(b.id ?? ''));
+
+  return {
+    id: options.comparisonId ?? randomUUID(),
+    baseRowsHash: hashMtoRows(ours),
+    baseRowsRevision: options.baseRowsRevision ?? 0,
+    fileName,
+    sheet,
+    accuracy: rows.length ? Math.round((matched / rows.length) * 1000) / 10 : 0,
+    targetAccuracy: 90,
+    counts: { matched, qtyDiff, fieldDiff, missing, extra },
+    rows,
+    createdAt: new Date().toISOString(),
+  };
+}

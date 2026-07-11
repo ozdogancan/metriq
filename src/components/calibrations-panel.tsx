@@ -16,7 +16,8 @@ export function CalibrationsPanel({ lang, initial }: { lang: Lang; initial: Cali
   async function persist(cal: Calibration) {
     try {
       const res = await fetch('/api/calibrations', {
-        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(cal),
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...cal, expectedVersion: cal.version ?? 0 }),
       });
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
@@ -32,15 +33,15 @@ export function CalibrationsPanel({ lang, initial }: { lang: Lang; initial: Cali
     }
   }
 
-  async function remove(id: string) {
+  async function remove(cal: Calibration) {
     if (!confirm(t(lang, 'confirm_delete'))) return;
     try {
-      const res = await fetch(`/api/calibrations?id=${id}`, { method: 'DELETE' });
+      const res = await fetch(`/api/calibrations?id=${cal.id}&version=${cal.version ?? 1}`, { method: 'DELETE' });
       if (!res.ok) {
         toast.error(tr ? 'Silinemedi — profil duruyor.' : 'Delete failed — profile kept.');
         return;
       }
-      setCals(prev => prev.filter(c => c.id !== id));
+      setCals(prev => prev.filter(c => c.id !== cal.id));
       toast.success(tr ? 'Profil silindi' : 'Profile deleted');
       router.refresh();
     } catch {
@@ -81,6 +82,7 @@ export function CalibrationsPanel({ lang, initial }: { lang: Lang; initial: Cali
               <div className="text-[14px] font-semibold">{cal.name}</div>
               <div className="mt-0.5 font-data text-[11px] text-muted">
                 {cal.rules.vocab === 'hygienic' ? t(lang, 'vocab_hygienic') : t(lang, 'vocab_steel')}
+                {` · v${cal.version ?? 1}`}
                 {cal.learnedFrom.length > 0 && ` · ${cal.learnedFrom.length} ${t(lang, 'learned_from')}`}
                 {' · '}{new Date(cal.updatedAt).toLocaleDateString(lang === 'tr' ? 'tr-TR' : 'en-GB')} {t(lang, 'updated')}
               </div>
@@ -93,7 +95,7 @@ export function CalibrationsPanel({ lang, initial }: { lang: Lang; initial: Cali
                 onChange={next => setCals(prev => prev.map(c => c.id === cal.id ? next : c))} />
               <div className="mt-4 flex gap-2">
                 <button className="btn btn-primary" onClick={() => persist(cals.find(c => c.id === cal.id)!)}>{t(lang, 'save')}</button>
-                <button className="btn btn-ghost hover:!text-danger" onClick={() => remove(cal.id)}>{t(lang, 'delete_run')}</button>
+                <button className="btn btn-ghost hover:!text-danger" onClick={() => remove(cal)}>{t(lang, 'delete_run')}</button>
               </div>
             </div>
           )}
