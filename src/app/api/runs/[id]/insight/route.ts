@@ -26,7 +26,10 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     : `You are a senior piping estimator. Summarize this MTO in 4-5 sentences: system character (sizes, dominant lines), notable items, and 1-2 risks to verify before quoting. Use only given numbers. Plain text.\n\nMTO:\n${compact}\n\nSteel: ${steelTxt || 'none'}`;
 
   try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`, {
+    // gemini-2.0-flash 2026'da emekli edildi (404); 2.5-flash-lite hızlı ve
+    // düşünme-bütçesi olmadan doğrudan metin döndürüyor (2.5-flash kısa
+    // maxOutputTokens'ta thinking'e harcayıp boş dönebiliyor).
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${key}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { maxOutputTokens: 400, temperature: 0.4 } }),
