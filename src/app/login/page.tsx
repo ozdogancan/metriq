@@ -4,7 +4,7 @@ import Image from 'next/image';
 import { langFromCookie } from '@/lib/i18n';
 import { LoginForm } from './login-form';
 
-export const metadata = { title: 'Giriş — Metriq' };
+export const metadata = { title: 'Sign in — Metriq' };
 
 export default async function LoginPage() {
   const store = await cookies();
