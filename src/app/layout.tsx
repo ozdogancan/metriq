@@ -10,8 +10,8 @@ const jetbrains = JetBrains_Mono({ subsets: ['latin', 'latin-ext'], variable: '-
 
 export const metadata: Metadata = {
   metadataBase: new URL('https://metriq-seven.vercel.app'),
-  title: 'Metriq — CAD metraj platformu',
-  description: "Modelden metraja, saniyeler içinde. NWD yükle, doğrulanmış MTO Excel'ini indir.",
+  title: 'Metriq — CAD quantity take-off',
+  description: 'From model to take-off, in seconds. Upload an NWD, download a verified MTO Excel.',
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
