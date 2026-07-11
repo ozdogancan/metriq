@@ -2,10 +2,7 @@
 import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { t, type Lang, type TKey } from '@/lib/i18n';
-import type { VocabProfileId } from '@/lib/types';
 import { isAllowedNwdSize } from '@/lib/upload-policy';
-
-interface CalOpt { id: string; name: string; vocab: VocabProfileId }
 
 // HTTP durum kodunu taşıyan hata — catch'te kullanıcı-dostu mesaja çevrilir
 class HttpError extends Error {
@@ -20,7 +17,7 @@ function errorKey(e: unknown): TKey {
   return 'err_server';
 }
 
-export function UploadZone({ lang, calibrations }: { lang: Lang; calibrations: CalOpt[] }) {
+export function UploadZone({ lang }: { lang: Lang }) {
   const router = useRouter();
   const tr = lang === 'tr';
   const fileRef = useRef<HTMLInputElement>(null);
@@ -28,8 +25,6 @@ export function UploadZone({ lang, calibrations }: { lang: Lang; calibrations: C
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [projectName, setProjectName] = useState('');
-  const [vocab, setVocab] = useState<VocabProfileId | 'auto'>('auto');
-  const [calId, setCalId] = useState('');
 
   async function handleFile(file: File) {
     if (!file.name.toLowerCase().endsWith('.nwd')) {
@@ -43,8 +38,9 @@ export function UploadZone({ lang, calibrations }: { lang: Lang; calibrations: C
     setBusy(true); setError('');
     try {
       const meta = {
+        // Tesisat tipi dosyadan otomatik algılanır; kalibrasyon üst formda seçilmez.
         projectName: projectName || file.name.replace(/\.nwd$/i, ''),
-        vocab, calibrationId: calId || null, fileName: file.name,
+        vocab: 'auto', calibrationId: null, fileName: file.name,
       };
       let res: Response;
       if (file.size > 4_000_000) {
@@ -92,50 +88,21 @@ export function UploadZone({ lang, calibrations }: { lang: Lang; calibrations: C
 
   return (
     <div className="space-y-4">
-      {/* Etiketli form — üç alanın ne işe yaradığı görünür olmalı (kaotik hissetmesin) */}
-      <div className="grid gap-3 sm:grid-cols-3">
-        <div>
-          <label htmlFor="uz-name" className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-muted">
-            {tr ? 'Proje adı' : 'Project name'}
-            <span className="ml-1.5 font-normal normal-case tracking-normal opacity-70">
-              {tr ? '(opsiyonel)' : '(optional)'}
-            </span>
-          </label>
-          <input
-            id="uz-name"
-            value={projectName}
-            onChange={e => setProjectName(e.target.value)}
-            placeholder={tr ? 'boş kalırsa dosya adı kullanılır' : 'file name is used if empty'}
-            className="panel w-full px-3.5 py-2.5 text-[13px] outline-none focus:border-copper/60 placeholder:text-muted/60"
-          />
-        </div>
-        <div>
-          <label htmlFor="uz-vocab" className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-muted">
-            {tr ? 'Tesisat tipi' : 'System type'}
-            <span className="ml-1.5 font-normal normal-case tracking-normal opacity-70">
-              {tr ? '— dosyadan otomatik algılanır' : '— auto-detected from the file'}
-            </span>
-          </label>
-          <select id="uz-vocab" value={vocab} onChange={e => setVocab(e.target.value as VocabProfileId | 'auto')}
-            className="panel w-full px-3.5 py-2.5 text-[13px] outline-none focus:border-copper/60">
-            <option value="auto">{tr ? '✦ Otomatik algıla (önerilen)' : '✦ Auto-detect (recommended)'}</option>
-            <option value="steel-plant">{t(lang, 'vocab_steel')}</option>
-            <option value="hygienic">{t(lang, 'vocab_hygienic')}</option>
-          </select>
-        </div>
-        <div>
-          <label htmlFor="uz-cal" className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-muted">
-            {tr ? 'Kalibrasyon' : 'Calibration'}
-            <span className="ml-1.5 font-normal normal-case tracking-normal opacity-70">
-              {tr ? '— önceki düzeltmelerin' : '— your past corrections'}
-            </span>
-          </label>
-          <select id="uz-cal" value={calId} onChange={e => setCalId(e.target.value)}
-            className="panel w-full px-3.5 py-2.5 text-[13px] outline-none focus:border-copper/60">
-            <option value="">{t(lang, 'calibration_none')}</option>
-            {calibrations.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
-        </div>
+      {/* Sadece proje adı — tesisat tipi dosyadan otomatik algılanır (seçim gerekmez) */}
+      <div>
+        <label htmlFor="uz-name" className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-muted">
+          {tr ? 'Proje adı' : 'Project name'}
+          <span className="ml-1.5 font-normal normal-case tracking-normal opacity-70">
+            {tr ? '(opsiyonel — boş kalırsa dosya adı kullanılır)' : '(optional — file name is used if empty)'}
+          </span>
+        </label>
+        <input
+          id="uz-name"
+          value={projectName}
+          onChange={e => setProjectName(e.target.value)}
+          placeholder={tr ? 'ör. Şantiye A — Buhar Hattı' : 'e.g. Site A — Steam Line'}
+          className="panel w-full max-w-md px-3.5 py-2.5 text-[13px] outline-none focus:border-copper/60 placeholder:text-muted/60"
+        />
       </div>
 
       <div
