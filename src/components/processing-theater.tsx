@@ -293,7 +293,38 @@ export function ProcessingTheater(props: {
   const doneCount = stages.filter(s => s.status === 'done').length;
   const activeStage = stages.find(s => s.status === 'active');
   const allDone = stages.length > 0 && stages.every(s => s.status === 'done');
-  const pct = Math.round(((doneCount + (activeStage ? 0.5 : 0)) / total) * 100);
+
+  // Süre-AĞIRLIKLI ilerleme: deterministik ayrıştırma saniyenin altında biter
+  // (7 aşama bir anda tamamlanır) — eşit ağırlıkta gösterince çubuk %83'e zıplayıp
+  // AI denetimini beklerken donmuş görünüyordu. Ağırlıklar gerçek süreleri yansıtır;
+  // AI aşaması çubuğun büyük kısmını kaplar ve beklerken canlı sürünür.
+  const WEIGHT: Record<StageKey, number> = {
+    upload: 1, scan: 2, extract: 1, size: 1, lines: 1, rules: 1, steel: 1, audit: 7, finalize: 1,
+  };
+  const wOf = (k: StageKey) => WEIGHT[k] ?? 1;
+  const totalWeight = stages.reduce((s, x) => s + wOf(x.key), 0) || 16;
+
+  // AI denetimi beklerken çubuğu canlı tutmak için hafif tik (400 ms)
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    if (allDone || failed || activeStage?.key !== 'audit') return;
+    const iv = setInterval(() => { if (!document.hidden) forceTick(n => n + 1); }, 400);
+    return () => clearInterval(iv);
+  }, [allDone, failed, activeStage?.key]);
+
+  let progressWeight = stages.filter(s => s.status === 'done').reduce((s, x) => s + wOf(x.key), 0);
+  if (activeStage) {
+    const w = wOf(activeStage.key);
+    if (activeStage.key === 'audit' && activeStage.startedAt) {
+      // geçen süreye göre asimptotik sürünme: aşama ağırlığının %92'sine yaklaşır,
+      // ama bitene dek doldurmaz (donmuş değil, ilerliyor hissi)
+      const elapsed = Math.max(0, (Date.now() - Date.parse(activeStage.startedAt)) / 1000);
+      progressWeight += w * 0.92 * (1 - Math.exp(-elapsed / 3.2));
+    } else {
+      progressWeight += w * 0.5;
+    }
+  }
+  const pct = allDone ? 100 : Math.min(99, Math.round((progressWeight / totalWeight) * 100));
 
   // Durum satırı: hata > tamamlandı > aktif aşama > sırada
   const statusText = failed ? UI.failed[lang]
