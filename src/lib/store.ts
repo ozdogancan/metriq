@@ -5,7 +5,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { Run, MtoRow, SteelRow, Calibration } from './types';
 import { isPg, kvGet, kvSet, kvDel, kvList, pgPutFile, pgGetFile, pgDelFiles } from './store-pg';
-import { isSafeNwdFileName, isUuid } from './upload-policy';
+import { isSafeNwdFileName, isUuid, storageKeyName } from './upload-policy';
 
 const SB_URL = process.env.SUPABASE_URL;
 const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -63,7 +63,8 @@ export async function listRuns(): Promise<Run[]> {
 
 export async function getRun(id: string): Promise<Run | null> {
   if (isSupabase) {
-    const { data } = await client().from('runs').select('*').eq('id', id).maybeSingle();
+    const { data, error } = await client().from('runs').select('*').eq('id', id).maybeSingle();
+    if (error) throw error;
     return data ? dbRun(data) : null;
   }
   if (isPg) return kvGet<Run>(`run-${id}`);
@@ -91,13 +92,19 @@ export async function saveRun(run: Run): Promise<void> {
 export async function deleteRun(id: string): Promise<void> {
   if (isSupabase) {
     const run = await getRun(id);
-    if (run && isSafeNwdFileName(run.fileName)) {
-      const { error: storageError } = await client().storage.from(BUCKET).remove([`${id}/${run.fileName}`]);
-      if (storageError) throw storageError;
-    }
-    await client().from('mto_rows').delete().eq('run_id', id);
-    await client().from('steel_rows').delete().eq('run_id', id);
-    await client().from('runs').delete().eq('id', id);
+    if (!run) return;
+    if (!isSafeNwdFileName(run.fileName)) throw new Error('unsafe storage key');
+    const path = `${id}/${storageKeyName(run.fileName)}`;
+    // Postgres deletes the run (children cascade) and records the object path
+    // in one transaction. Storage is external, so its cleanup is acknowledged
+    // only after success and otherwise remains retryable in the outbox.
+    const { error } = await client().rpc('delete_run_and_queue_storage', {
+      p_run_id: id,
+      p_path: path,
+    });
+    if (error) throw error;
+    try { await drainStorageCleanup(5); }
+    catch (cleanupError) { console.error('storage cleanup queued for retry', cleanupError); }
     return;
   }
   if (isPg) {
@@ -182,7 +189,8 @@ export async function saveSteel(runId: string, rows: SteelRow[]): Promise<void> 
 // ---------- Calibrations ----------
 export async function listCalibrations(): Promise<Calibration[]> {
   if (isSupabase) {
-    const { data } = await client().from('calibrations').select('*').order('updated_at', { ascending: false });
+    const { data, error } = await client().from('calibrations').select('*').order('updated_at', { ascending: false });
+    if (error) throw error;
     return (data ?? []).map((r: Record<string, unknown>) => ({
       id: r.id as string, name: r.name as string, rules: r.rules as Calibration['rules'],
       learnedFrom: (r.learned_from as string[]) ?? [], createdAt: r.created_at as string, updatedAt: r.updated_at as string,
@@ -207,29 +215,105 @@ export async function saveCalibration(cal: Calibration): Promise<void> {
 }
 
 export async function deleteCalibration(id: string): Promise<void> {
-  if (isSupabase) { await client().from('calibrations').delete().eq('id', id); return; }
+  if (isSupabase) {
+    const { error } = await client().from('calibrations').delete().eq('id', id);
+    if (error) throw error;
+    return;
+  }
   await writeJson('calibrations.json', (await readJson<Calibration[]>('calibrations.json', [])).filter(c => c.id !== id));
 }
 
 // ---------- Dosya depolama ----------
 export async function storeFile(runId: string, fileName: string, buf: Buffer): Promise<string> {
   if (!isUuid(runId) || !isSafeNwdFileName(fileName)) throw new Error('unsafe storage key');
+  // Depolama anahtarında ham ad KULLANILMAZ: Supabase köşeli parantez/Türkçe
+  // karakterde "Invalid key" atıyordu (görünen ad run.fileName'de aynen kalır).
+  const safeName = storageKeyName(fileName);
   if (isSupabase) {
-    const key = `${runId}/${fileName}`;
+    const key = `${runId}/${safeName}`;
     const { error } = await client().storage.from(BUCKET).upload(key, buf, { upsert: true, contentType: 'application/octet-stream' });
     if (error) throw error;
     return key;
   }
   if (isPg) {
-    const key = `${runId}/${fileName}`;
+    const key = `${runId}/${safeName}`;
     await pgPutFile(key, buf);
     return key;
   }
   const dir = path.join(DATA_DIR, 'files', runId);
   await fs.mkdir(dir, { recursive: true });
-  const p = path.join(dir, fileName);
+  const p = path.join(dir, safeName);
   await fs.writeFile(p, buf);
   return p;
+}
+
+export async function deleteStoredFile(runId: string, fileName: string): Promise<void> {
+  if (!isUuid(runId) || !isSafeNwdFileName(fileName)) throw new Error('unsafe storage key');
+  const key = `${runId}/${storageKeyName(fileName)}`;
+  if (isSupabase) {
+    const { error } = await client().storage.from(BUCKET).remove([key]);
+    if (error) throw error;
+    return;
+  }
+  if (isPg) {
+    await pgDelFiles(key);
+    return;
+  }
+  try {
+    await fs.unlink(path.join(DATA_DIR, 'files', runId, storageKeyName(fileName)));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+}
+
+export async function drainStorageCleanup(limit = 5): Promise<void> {
+  if (!isSupabase) return;
+  const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(Math.trunc(limit), 20)) : 5;
+  const now = new Date().toISOString();
+  const { data, error } = await client().from('storage_cleanup').select('path,kind')
+    .lte('not_before', now)
+    .order('queued_at', { ascending: true }).limit(safeLimit);
+  if (error) throw error;
+  for (const row of data ?? []) {
+    const key = row.path as string;
+    const kind = row.kind as string;
+    if (!isSafeStorageKey(key)) {
+      console.error('unsafe path left in storage cleanup outbox');
+      continue;
+    }
+    if (!['reservation', 'finalizing', 'delete', 'deleting'].includes(kind)) {
+      console.error('unsafe kind left in storage cleanup outbox');
+      continue;
+    }
+    // Compare-and-swap claims this exact generation/state. A finalizer can no
+    // longer claim a reservation after this succeeds.
+    const { data: claimed, error: claimError } = await client().from('storage_cleanup')
+      .update({ kind: 'deleting', queued_at: now })
+      .eq('path', key).eq('kind', kind).lte('not_before', now)
+      .select('path').maybeSingle();
+    if (claimError) throw claimError;
+    if (!claimed) continue;
+    const runId = key.slice(0, key.indexOf('/'));
+    const { data: liveRun, error: runError } = await client().from('runs').select('id')
+      .eq('id', runId).maybeSingle();
+    if (runError) throw runError;
+    if (liveRun) {
+      // A finalization succeeded but acknowledging its reservation did not.
+      // The live run owns the object; clear only the stale reservation.
+      const { error: ackError } = await client().from('storage_cleanup').delete()
+        .eq('path', key).eq('kind', 'deleting');
+      if (ackError) throw ackError;
+      continue;
+    }
+    const { error: storageError } = await client().storage.from(BUCKET).remove([key]);
+    if (storageError) {
+      console.error('storage cleanup deferred', storageError.message);
+      continue;
+    }
+    const { error: ackError } = await client().from('storage_cleanup').delete()
+      .eq('path', key).eq('kind', 'deleting');
+    if (ackError) throw ackError;
+  }
 }
 
 export async function fetchStoredFile(key: string): Promise<Buffer> {
@@ -246,10 +330,53 @@ export async function fetchStoredFile(key: string): Promise<Buffer> {
 export async function signedUploadUrl(runId: string, fileName: string): Promise<{ path: string; token: string } | null> {
   if (!isSupabase) return null;
   if (!isUuid(runId) || !isSafeNwdFileName(fileName)) throw new Error('unsafe storage key');
-  const key = `${runId}/${fileName}`;
+  const key = `${runId}/${storageKeyName(fileName)}`;
   const { data, error } = await client().storage.from(BUCKET).createSignedUploadUrl(key);
   if (error || !data) throw error ?? new Error('signed url failed');
   return { path: key, token: data.token };
+}
+
+export async function reserveStoredUpload(runId: string, fileName: string): Promise<void> {
+  if (!isSupabase) return;
+  if (!isUuid(runId) || !isSafeNwdFileName(fileName)) throw new Error('unsafe storage key');
+  const now = new Date();
+  const { error } = await client().from('storage_cleanup').insert({
+    path: `${runId}/${storageKeyName(fileName)}`,
+    queued_at: now.toISOString(),
+    not_before: new Date(now.getTime() + 4 * 60 * 60 * 1000).toISOString(),
+    kind: 'reservation',
+  });
+  if (error) throw error;
+}
+
+export async function beginFinalizeStoredUpload(runId: string, fileName: string): Promise<boolean> {
+  if (!isSupabase) return true;
+  if (!isUuid(runId) || !isSafeNwdFileName(fileName)) throw new Error('unsafe storage key');
+  const { data, error } = await client().from('storage_cleanup')
+    .update({
+      kind: 'finalizing',
+      not_before: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+    })
+    .eq('path', `${runId}/${storageKeyName(fileName)}`).eq('kind', 'reservation')
+    .select('path').maybeSingle();
+  if (error) throw error;
+  return Boolean(data);
+}
+
+export async function claimStoredUpload(runId: string, fileName: string): Promise<void> {
+  if (!isSupabase) return;
+  if (!isUuid(runId) || !isSafeNwdFileName(fileName)) throw new Error('unsafe storage key');
+  const { error } = await client().from('storage_cleanup').delete()
+    .eq('path', `${runId}/${storageKeyName(fileName)}`).eq('kind', 'finalizing');
+  if (error) throw error;
+}
+
+export async function cancelStoredUpload(runId: string, fileName: string): Promise<void> {
+  if (!isSupabase) return;
+  if (!isUuid(runId) || !isSafeNwdFileName(fileName)) throw new Error('unsafe storage key');
+  const { error } = await client().from('storage_cleanup').delete()
+    .eq('path', `${runId}/${storageKeyName(fileName)}`).in('kind', ['reservation', 'finalizing']);
+  if (error) throw error;
 }
 
 function dbRun(r: Record<string, unknown>): Run {
@@ -308,7 +435,8 @@ import type { AppNotification, LearningEvent } from './types';
 
 export async function listNotifications(limit = 30): Promise<AppNotification[]> {
   if (isSupabase) {
-    const { data } = await client().from('notifications').select('*').order('created_at', { ascending: false }).limit(limit);
+    const { data, error } = await client().from('notifications').select('*').order('created_at', { ascending: false }).limit(limit);
+    if (error) throw error;
     return (data ?? []).map((r: Record<string, unknown>) => ({
       id: r.id as string, kind: r.kind as AppNotification['kind'], title: r.title as string,
       body: (r.body as string) ?? '', url: (r.url as string) ?? '/', read: Boolean(r.read), createdAt: r.created_at as string,
@@ -320,9 +448,10 @@ export async function listNotifications(limit = 30): Promise<AppNotification[]> 
 
 export async function addNotification(n: AppNotification): Promise<void> {
   if (isSupabase) {
-    await client().from('notifications').insert({
+    const { error } = await client().from('notifications').insert({
       id: n.id, kind: n.kind, title: n.title, body: n.body, url: n.url, read: n.read, created_at: n.createdAt,
     });
+    if (error) throw error;
     return;
   }
   const all = await readJson<AppNotification[]>('notifications.json', []);
@@ -333,7 +462,8 @@ export async function addNotification(n: AppNotification): Promise<void> {
 export async function markNotificationsRead(ids: string[] | 'all'): Promise<void> {
   if (isSupabase) {
     const q = client().from('notifications').update({ read: true });
-    if (ids === 'all') await q.eq('read', false); else await q.in('id', ids);
+    const { error } = ids === 'all' ? await q.eq('read', false) : await q.in('id', ids);
+    if (error) throw error;
     return;
   }
   const all = await readJson<AppNotification[]>('notifications.json', []);
@@ -344,7 +474,8 @@ export async function markNotificationsRead(ids: string[] | 'all'): Promise<void
 export async function deleteNotifications(ids: string[] | 'all'): Promise<void> {
   if (isSupabase) {
     const q = client().from('notifications').delete();
-    if (ids === 'all') await q.gte('created_at', '1970-01-01'); else await q.in('id', ids);
+    const { error } = ids === 'all' ? await q.gte('created_at', '1970-01-01') : await q.in('id', ids);
+    if (error) throw error;
     return;
   }
   const all = await readJson<AppNotification[]>('notifications.json', []);
@@ -355,9 +486,10 @@ export async function deleteNotifications(ids: string[] | 'all'): Promise<void> 
 export async function addLearningEvents(events: LearningEvent[]): Promise<void> {
   if (!events.length) return;
   if (isSupabase) {
-    await client().from('learning_events').insert(events.map(e => ({
+    const { error } = await client().from('learning_events').insert(events.map(e => ({
       id: e.id, run_id: e.runId, ts: e.ts, kind: e.kind, before: e.before, after: e.after, context: e.context,
     })));
+    if (error) throw error;
     return;
   }
   const all = await readJson<LearningEvent[]>('learning-events.json', []);
@@ -367,7 +499,8 @@ export async function addLearningEvents(events: LearningEvent[]): Promise<void> 
 
 export async function listLearningEvents(limit = 500): Promise<LearningEvent[]> {
   if (isSupabase) {
-    const { data } = await client().from('learning_events').select('*').order('ts', { ascending: false }).limit(limit);
+    const { data, error } = await client().from('learning_events').select('*').order('ts', { ascending: false }).limit(limit);
+    if (error) throw error;
     return (data ?? []).map((r: Record<string, unknown>) => ({
       id: r.id as string, runId: r.run_id as string, ts: r.ts as string, kind: r.kind as LearningEvent['kind'],
       before: r.before as LearningEvent['before'], after: r.after as LearningEvent['after'],
@@ -380,7 +513,8 @@ export async function listLearningEvents(limit = 500): Promise<LearningEvent[]> 
 // ---------- Web Push abonelikleri ----------
 export async function addPushSubscription(sub: { endpoint: string; keys: Record<string, string> }): Promise<void> {
   if (isSupabase) {
-    await client().from('push_subscriptions').upsert({ endpoint: sub.endpoint, subscription: sub });
+    const { error } = await client().from('push_subscriptions').upsert({ endpoint: sub.endpoint, subscription: sub });
+    if (error) throw error;
     return;
   }
   const all = await readJson<Record<string, unknown>[]>('push-subs.json', []);
@@ -390,14 +524,19 @@ export async function addPushSubscription(sub: { endpoint: string; keys: Record<
 
 export async function listPushSubscriptions(): Promise<{ endpoint: string; keys: Record<string, string> }[]> {
   if (isSupabase) {
-    const { data } = await client().from('push_subscriptions').select('subscription');
+    const { data, error } = await client().from('push_subscriptions').select('subscription');
+    if (error) throw error;
     return (data ?? []).map((r: Record<string, unknown>) => r.subscription as { endpoint: string; keys: Record<string, string> });
   }
   return readJson('push-subs.json', []);
 }
 
 export async function removePushSubscription(endpoint: string): Promise<void> {
-  if (isSupabase) { await client().from('push_subscriptions').delete().eq('endpoint', endpoint); return; }
+  if (isSupabase) {
+    const { error } = await client().from('push_subscriptions').delete().eq('endpoint', endpoint);
+    if (error) throw error;
+    return;
+  }
   const all = await readJson<{ endpoint: string }[]>('push-subs.json', []);
   await writeJson('push-subs.json', all.filter(s => s.endpoint !== endpoint));
 }

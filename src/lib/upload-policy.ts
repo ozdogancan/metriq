@@ -1,6 +1,8 @@
 // Shared upload guardrails. Keep these values aligned with the Supabase bucket.
 export const MAX_NWD_BYTES = 50 * 1024 * 1024;
-export const MAX_ANSWER_XLSX_BYTES = 15 * 1024 * 1024;
+// Answer workbooks currently use multipart through a Vercel Function. Keep
+// enough headroom below Vercel's 4.5 MB request-body ceiling for boundaries.
+export const MAX_ANSWER_XLSX_BYTES = 4 * 1024 * 1024;
 export const MAX_PROJECT_NAME_CHARS = 120;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -16,6 +18,24 @@ export function isSafeNwdFileName(value: unknown): value is string {
     && value.trim() === value
     && !/[\\/\0]/.test(value)
     && value.toLowerCase().endsWith('.nwd');
+}
+
+// Supabase Storage anahtarları köşeli parantez / Türkçe karakter / bazı özel
+// karakterlerde "Invalid key" verir. Görünen dosya adı (run.fileName) aynen
+// korunur; DEPOLAMA anahtarı bu deterministik ASCII ada çevrilir.
+export function storageKeyName(fileName: string): string {
+  const trMap: Record<string, string> = {
+    ı: 'i', İ: 'I', ş: 's', Ş: 'S', ğ: 'g', Ğ: 'G',
+    ç: 'c', Ç: 'C', ö: 'o', Ö: 'O', ü: 'u', Ü: 'U',
+  };
+  const base = fileName.replace(/\.nwd$/i, '')
+    .replace(/[ıİşŞğĞçÇöÖüÜ]/g, ch => trMap[ch] ?? ch)
+    .normalize('NFKD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^A-Za-z0-9._-]+/g, '_')
+    .replace(/_{2,}/g, '_')
+    .replace(/^[_.]+|[_.]+$/g, '')
+    .slice(0, 120);
+  return (base || 'model') + '.nwd';
 }
 
 export function isAllowedNwdSize(value: unknown): value is number {
