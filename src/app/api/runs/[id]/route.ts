@@ -4,12 +4,15 @@ import { getRun, getRows, getSteel, saveRows, saveRun, deleteRun, addLearningEve
 import { computeTotals } from '@/lib/vocab';
 import { RowsPatchSchema, zodMessage } from '@/lib/schemas';
 import type { LearningEvent, MtoRow } from '@/lib/types';
+import { requireApiSession } from '@/lib/session';
 
 export const runtime = 'nodejs';
 
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function GET(req: NextRequest, ctx: Ctx) {
+  const denied = await requireApiSession();
+  if (denied) return denied;
   const { id } = await ctx.params;
   let run = await getRun(id);
   if (!run) return NextResponse.json({ error: 'not found' }, { status: 404 });
@@ -29,6 +32,8 @@ function slim(r: MtoRow): Partial<MtoRow> {
 }
 
 export async function PATCH(req: NextRequest, ctx: Ctx) {
+  const denied = await requireApiSession();
+  if (denied) return denied;
   const { id } = await ctx.params;
   const run = await getRun(id);
   if (!run) return NextResponse.json({ error: 'not found' }, { status: 404 });
@@ -72,6 +77,8 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
 }
 
 export async function DELETE(_req: NextRequest, ctx: Ctx) {
+  const denied = await requireApiSession();
+  if (denied) return denied;
   const { id } = await ctx.params;
   await deleteRun(id);
   return NextResponse.json({ ok: true });

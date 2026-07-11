@@ -2,10 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { isSupabase, signedUploadUrl } from '@/lib/store';
 import { isAllowedNwdSize, isSafeNwdFileName } from '@/lib/upload-policy';
+import { requireApiSession } from '@/lib/session';
 
 export const runtime = 'nodejs';
 
 export async function POST(req: NextRequest) {
+  const denied = await requireApiSession();
+  if (denied) return denied;
   try {
     const body = await req.json().catch(() => null);
     const fileName = body?.fileName;

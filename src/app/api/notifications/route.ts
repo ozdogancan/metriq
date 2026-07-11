@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { listNotifications, markNotificationsRead, deleteNotifications } from '@/lib/store';
+import { requireApiSession } from '@/lib/session';
 
 export const runtime = 'nodejs';
 
@@ -13,11 +14,15 @@ function parseTargets(v: unknown): string[] | 'all' | null {
 }
 
 export async function GET() {
+  const denied = await requireApiSession();
+  if (denied) return denied;
   const items = await listNotifications(30);
   return NextResponse.json({ items, unread: items.filter(n => !n.read).length });
 }
 
 export async function POST(req: NextRequest) {
+  const denied = await requireApiSession();
+  if (denied) return denied;
   const body = await req.json().catch(() => ({}));
   const targets = parseTargets(body.markRead);
   if (targets) {
@@ -28,6 +33,8 @@ export async function POST(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
+  const denied = await requireApiSession();
+  if (denied) return denied;
   const body = await req.json().catch(() => ({}));
   const targets = parseTargets(body.ids);
   if (targets) {

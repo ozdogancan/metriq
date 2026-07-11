@@ -3,14 +3,19 @@ import { randomUUID } from 'node:crypto';
 import { listCalibrations, saveCalibration, deleteCalibration } from '@/lib/store';
 import { CalibrationPostSchema, zodMessage } from '@/lib/schemas';
 import type { Calibration } from '@/lib/types';
+import { requireApiSession } from '@/lib/session';
 
 export const runtime = 'nodejs';
 
 export async function GET() {
+  const denied = await requireApiSession();
+  if (denied) return denied;
   return NextResponse.json(await listCalibrations());
 }
 
 export async function POST(req: NextRequest) {
+  const denied = await requireApiSession();
+  if (denied) return denied;
   try {
     const raw = await req.json().catch(() => null);
     if (!raw || typeof raw !== 'object') {
@@ -40,6 +45,8 @@ export async function POST(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
+  const denied = await requireApiSession();
+  if (denied) return denied;
   const id = req.nextUrl.searchParams.get('id');
   if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });
   await deleteCalibration(id);

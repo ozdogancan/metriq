@@ -17,6 +17,7 @@ import {
   isSafeNwdFileName,
   isUuid,
 } from '@/lib/upload-policy';
+import { requireApiSession } from '@/lib/session';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -44,6 +45,8 @@ function normalizeMeta(raw: unknown, uploadedFileName?: string): RunCreateMeta |
 }
 
 export async function GET() {
+  const denied = await requireApiSession();
+  if (denied) return denied;
   const runs = await listRuns();
   // 15 dk'yı aşan 'processing' run'ları hataya çevir (watchdog)
   const resolved = await Promise.all(
@@ -173,6 +176,8 @@ async function processRun(run: Run, buf: Buffer, rules: CalibrationRules, lang: 
 }
 
 export async function POST(req: NextRequest) {
+  const denied = await requireApiSession();
+  if (denied) return denied;
   try {
     let buf: Buffer;
     let meta: RunCreateMeta;

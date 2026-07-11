@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { getRun, getRows, updateRunMeta, addLearningEvents } from '@/lib/store';
 import { parseAnswerXlsx, compareAnswer } from '@/lib/answer-compare';
 import { MAX_ANSWER_XLSX_BYTES } from '@/lib/upload-policy';
+import { requireApiSession } from '@/lib/session';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -12,6 +13,8 @@ export const maxDuration = 60;
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function POST(req: NextRequest, ctx: Ctx) {
+  const denied = await requireApiSession();
+  if (denied) return denied;
   const { id } = await ctx.params;
   const run = await getRun(id);
   if (!run) return NextResponse.json({ error: 'not found' }, { status: 404 });

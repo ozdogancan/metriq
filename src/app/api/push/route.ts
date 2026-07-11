@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { addPushSubscription, removePushSubscription } from '@/lib/store';
+import { requireApiSession } from '@/lib/session';
 
 export const runtime = 'nodejs';
 
@@ -31,6 +32,8 @@ function validKey(value: unknown, max: number): value is string {
 }
 
 export async function POST(req: NextRequest) {
+  const denied = await requireApiSession();
+  if (denied) return denied;
   const body = await req.json().catch(() => null);
   const sub = body?.subscription;
   if (!validEndpoint(sub?.endpoint)
@@ -43,6 +46,8 @@ export async function POST(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
+  const denied = await requireApiSession();
+  if (denied) return denied;
   const body = await req.json().catch(() => null);
   if (!validEndpoint(body?.endpoint)) return NextResponse.json({ error: 'endpoint missing' }, { status: 400 });
   await removePushSubscription(body.endpoint);

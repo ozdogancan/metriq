@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getRun, getRows, getSteel } from '@/lib/store';
 import { buildRunWorkbook } from '@/lib/excel';
+import { requireApiSession } from '@/lib/session';
 
 export const runtime = 'nodejs';
 
 export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  const denied = await requireApiSession();
+  if (denied) return denied;
   const { id } = await ctx.params;
   const run = await getRun(id);
   if (!run) return NextResponse.json({ error: 'not found' }, { status: 404 });

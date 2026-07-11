@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getRun, getRows, getSteel } from '@/lib/store';
+import { requireApiSession } from '@/lib/session';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
 // Gemini ile kısa mühendis-özeti (opsiyonel — GEMINI_API_KEY yoksa 404)
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  const denied = await requireApiSession();
+  if (denied) return denied;
   const key = process.env.GEMINI_API_KEY;
   if (!key) return NextResponse.json({ error: 'disabled' }, { status: 404 });
   const { id } = await ctx.params;

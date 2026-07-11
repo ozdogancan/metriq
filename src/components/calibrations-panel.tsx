@@ -1,6 +1,7 @@
 'use client';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { toast } from 'sonner';
 import { t, type Lang, type TKey } from '@/lib/i18n';
 import type { Calibration, CalibrationRules } from '@/lib/types';
 
@@ -8,26 +9,45 @@ export function CalibrationsPanel({ lang, initial }: { lang: Lang; initial: Cali
   const router = useRouter();
   const [cals, setCals] = useState(initial);
   const [openId, setOpenId] = useState<string | null>(initial[0]?.id ?? null);
+  const tr = lang === 'tr';
 
+  // Sessiz başarısızlık YASAK: kullanıcı kuralı kaydetti sanıp yanlış kurallarla
+  // sonraki metraja girmemeli — hata her zaman görünür.
   async function persist(cal: Calibration) {
-    const res = await fetch('/api/calibrations', {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(cal),
-    });
-    if (res.ok) {
+    try {
+      const res = await fetch('/api/calibrations', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(cal),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        toast.error((tr ? 'Kalibrasyon kaydedilemedi: ' : 'Calibration save failed: ') + (d.error || `HTTP ${res.status}`));
+        return;
+      }
       const saved = await res.json();
       setCals(prev => prev.some(c => c.id === saved.id) ? prev.map(c => c.id === saved.id ? saved : c) : [saved, ...prev]);
+      toast.success(tr ? 'Kalibrasyon kaydedildi' : 'Calibration saved');
       router.refresh();
+    } catch {
+      toast.error(tr ? 'Ağ hatası — kalibrasyon kaydedilemedi.' : 'Network error — calibration not saved.');
     }
   }
 
   async function remove(id: string) {
     if (!confirm(t(lang, 'confirm_delete'))) return;
-    await fetch(`/api/calibrations?id=${id}`, { method: 'DELETE' });
-    setCals(prev => prev.filter(c => c.id !== id));
-    router.refresh();
+    try {
+      const res = await fetch(`/api/calibrations?id=${id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        toast.error(tr ? 'Silinemedi — profil duruyor.' : 'Delete failed — profile kept.');
+        return;
+      }
+      setCals(prev => prev.filter(c => c.id !== id));
+      toast.success(tr ? 'Profil silindi' : 'Profile deleted');
+      router.refresh();
+    } catch {
+      toast.error(tr ? 'Ağ hatası — silinemedi.' : 'Network error — not deleted.');
+    }
   }
 
-  const tr = lang === 'tr';
   return (
     <div className="space-y-4">
       {/* Kalibrasyon = müşteri hafızası; profiller jargondan değil gerçek metrajlardan doğar */}
