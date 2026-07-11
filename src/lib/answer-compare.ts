@@ -3,13 +3,22 @@
 // bizim deterministik motorun satırları ↔ müşterinin cevap dosyası.
 import 'server-only';
 import ExcelJS from 'exceljs';
+import { inflateRawSync } from 'node:zlib';
 import type { AnswerDiff, AnswerDiffRow, MtoRow, Unit } from './types';
 
-const MAX_XLSX_ENTRIES = 500;
-const MAX_XLSX_ENTRY_BYTES = 40 * 1024 * 1024;
-const MAX_XLSX_UNCOMPRESSED_BYTES = 100 * 1024 * 1024;
+const MAX_XLSX_ENTRIES = 128;
+const MAX_XLSX_ENTRY_BYTES = 4 * 1024 * 1024;
+const MAX_XLSX_UNCOMPRESSED_BYTES = 16 * 1024 * 1024;
+const MAX_XLSX_WORKSHEETS = 12;
+const MAX_WORKSHEET_ROWS = 5_000;
+const MAX_WORKSHEET_COLUMNS = 64;
+const MAX_WORKBOOK_ROWS = 10_000;
+const MAX_WORKBOOK_CELLS = 100_000;
+const MAX_CELL_TEXT_CHARS = 4_096;
+const MAX_WORKBOOK_TEXT_CHARS = 4_000_000;
 const EOCD = 0x06054b50;
 const CENTRAL_FILE = 0x02014b50;
+const LOCAL_FILE = 0x04034b50;
 
 function assertSafeXlsxArchive(buf: Buffer): void {
   if (buf.length < 22 || buf.readUInt16LE(0) !== 0x4b50) {
@@ -24,31 +33,81 @@ function assertSafeXlsxArchive(buf: Buffer): void {
   const entries = buf.readUInt16LE(eocd + 10);
   const centralSize = buf.readUInt32LE(eocd + 12);
   const centralOffset = buf.readUInt32LE(eocd + 16);
+  const centralEnd = centralOffset + centralSize;
   if (entries === 0 || entries > MAX_XLSX_ENTRIES
-    || centralOffset + centralSize > buf.length) {
+    || centralEnd > eocd) {
     throw new Error('Cevap dosyası güvenli XLSX arşiv sınırlarını aşıyor.');
   }
   let pos = centralOffset;
   let total = 0;
+  let worksheetEntries = 0;
   for (let i = 0; i < entries; i++) {
-    if (pos + 46 > buf.length || buf.readUInt32LE(pos) !== CENTRAL_FILE) {
+    if (pos + 46 > centralEnd || buf.readUInt32LE(pos) !== CENTRAL_FILE) {
       throw new Error('Cevap dosyasının ZIP dizini bozuk.');
     }
     const flags = buf.readUInt16LE(pos + 8);
+    const method = buf.readUInt16LE(pos + 10);
     const compressed = buf.readUInt32LE(pos + 20);
     const uncompressed = buf.readUInt32LE(pos + 24);
     const nameLen = buf.readUInt16LE(pos + 28);
     const extraLen = buf.readUInt16LE(pos + 30);
     const commentLen = buf.readUInt16LE(pos + 32);
+    const localOffset = buf.readUInt32LE(pos + 42);
+    const next = pos + 46 + nameLen + extraLen + commentLen;
+    if (next > centralEnd) {
+      throw new Error('Cevap dosyasının ZIP dizini bozuk.');
+    }
+    const name = buf.subarray(pos + 46, pos + 46 + nameLen).toString('utf8');
+    if (/^xl\/worksheets\/[^/]+\.xml$/i.test(name)) worksheetEntries++;
+    if (worksheetEntries > MAX_XLSX_WORKSHEETS) {
+      throw new Error('Cevap dosyası çok fazla çalışma sayfası içeriyor.');
+    }
     if ((flags & 0x1) !== 0 || compressed === 0xffffffff || uncompressed === 0xffffffff
-      || uncompressed > MAX_XLSX_ENTRY_BYTES) {
+      || localOffset === 0xffffffff || uncompressed > MAX_XLSX_ENTRY_BYTES
+      || (method !== 0 && method !== 8)) {
       throw new Error('Cevap dosyası desteklenmeyen veya aşırı büyük ZIP girdisi içeriyor.');
     }
-    total += uncompressed;
+
+    // Do not trust the central directory's declared uncompressed size: a ZIP
+    // bomb can forge it small and make JSZip/ExcelJS inflate far more data.
+    if (localOffset + 30 > centralOffset || buf.readUInt32LE(localOffset) !== LOCAL_FILE) {
+      throw new Error('Cevap dosyasının ZIP yerel başlığı bozuk.');
+    }
+    const localFlags = buf.readUInt16LE(localOffset + 6);
+    const localMethod = buf.readUInt16LE(localOffset + 8);
+    const localNameLen = buf.readUInt16LE(localOffset + 26);
+    const localExtraLen = buf.readUInt16LE(localOffset + 28);
+    const dataStart = localOffset + 30 + localNameLen + localExtraLen;
+    const dataEnd = dataStart + compressed;
+    if ((localFlags & 0x1) !== 0 || localMethod !== method || dataEnd > centralOffset) {
+      throw new Error('Cevap dosyasının ZIP veri sınırları bozuk.');
+    }
+    const localName = buf.subarray(localOffset + 30, localOffset + 30 + localNameLen).toString('utf8');
+    if (localName !== name) throw new Error('Cevap dosyasının ZIP dosya adları uyuşmuyor.');
+
+    let actualSize: number;
+    if (method === 0) {
+      actualSize = compressed;
+    } else {
+      try {
+        actualSize = inflateRawSync(buf.subarray(dataStart, dataEnd), {
+          maxOutputLength: MAX_XLSX_ENTRY_BYTES + 1,
+        }).length;
+      } catch {
+        throw new Error('Cevap dosyası güvenli açılmış ZIP sınırını aşıyor.');
+      }
+    }
+    if (actualSize !== uncompressed || actualSize > MAX_XLSX_ENTRY_BYTES) {
+      throw new Error('Cevap dosyasının ZIP boyut beyanı geçersiz.');
+    }
+    total += actualSize;
     if (total > MAX_XLSX_UNCOMPRESSED_BYTES) {
       throw new Error('Cevap dosyasının açılmış boyutu güvenli sınırı aşıyor.');
     }
-    pos += 46 + nameLen + extraLen + commentLen;
+    pos = next;
+  }
+  if (pos !== centralEnd) {
+    throw new Error('Cevap dosyasının ZIP dizini bozuk.');
   }
 }
 
@@ -78,12 +137,48 @@ function cellNum(c: ExcelJS.CellValue): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+function assertSafeWorkbookShape(wb: ExcelJS.Workbook): void {
+  if (wb.worksheets.length === 0 || wb.worksheets.length > MAX_XLSX_WORKSHEETS) {
+    throw new Error('Cevap dosyası güvenli çalışma sayfası sınırını aşıyor.');
+  }
+
+  let workbookRows = 0;
+  let workbookCells = 0;
+  let workbookTextChars = 0;
+  for (const ws of wb.worksheets) {
+    if (ws.rowCount > MAX_WORKSHEET_ROWS || ws.columnCount > MAX_WORKSHEET_COLUMNS) {
+      throw new Error('Cevap dosyası güvenli satır veya kolon sınırını aşıyor.');
+    }
+    ws.eachRow({ includeEmpty: false }, (row) => {
+      workbookRows++;
+      if (workbookRows > MAX_WORKBOOK_ROWS) {
+        throw new Error('Cevap dosyası toplam satır bütçesini aşıyor.');
+      }
+      row.eachCell({ includeEmpty: false }, (cell) => {
+        workbookCells++;
+        if (workbookCells > MAX_WORKBOOK_CELLS) {
+          throw new Error('Cevap dosyası hücre bütçesini aşıyor.');
+        }
+        const text = cellText(cell.value);
+        if (text.length > MAX_CELL_TEXT_CHARS) {
+          throw new Error('Cevap dosyası aşırı uzun hücre metni içeriyor.');
+        }
+        workbookTextChars += text.length;
+        if (workbookTextChars > MAX_WORKBOOK_TEXT_CHARS) {
+          throw new Error('Cevap dosyası metin bütçesini aşıyor.');
+        }
+      });
+    });
+  }
+}
+
 // Sayfalar içinde en çok başlık eşleştiren satırı bul → kolon haritası
 export function parseAnswerXlsx(buf: Buffer): Promise<{ rows: AnswerRow[]; sheet: string }> {
   return (async () => {
     assertSafeXlsxArchive(buf);
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(buf as unknown as ArrayBuffer);
+    assertSafeWorkbookShape(wb);
     let best: { sheet: string; headerRow: number; cols: Record<string, number>; score: number } | null = null;
 
     for (const ws of wb.worksheets) {
@@ -170,10 +265,12 @@ export function compareAnswer(ours: MtoRow[], answer: AnswerRow[], fileName: str
   const order: Record<string, number> = { missing: 0, qty_diff: 1, extra: 2, match: 3 };
   rows.sort((a, b) => order[a.status] - order[b.status] || a.code.localeCompare(b.code) || (b.s1 ?? -1) - (a.s1 ?? -1));
 
-  const totalAns = ansAgg.size;
+  // Every unmatched key counts, including rows our engine invented. Using only
+  // the answer-set size could report 100% even while exporting extra material.
+  const evaluatedKeys = ansAgg.size + extra;
   return {
     fileName, sheet,
-    accuracy: totalAns ? Math.round((matched / totalAns) * 1000) / 10 : 0,
+    accuracy: evaluatedKeys ? Math.round((matched / evaluatedKeys) * 1000) / 10 : 0,
     counts: { matched, qtyDiff, missing, extra },
     rows: rows.slice(0, 200),
     createdAt: new Date().toISOString(),

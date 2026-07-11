@@ -4,6 +4,46 @@ import { NextResponse, type NextRequest } from 'next/server';
 const SESSION_COOKIE = 'metriq_session';
 const SECRET = process.env.AUTH_SECRET || '';
 
+function contentSecurityPolicy(nonce: string): string {
+  const isDev = process.env.NODE_ENV === 'development';
+  let supabaseOrigin = '';
+  try {
+    const url = new URL(process.env.SUPABASE_URL || '');
+    if (url.protocol === 'https:') supabaseOrigin = url.origin;
+  } catch { /* Supabase is optional in local development. */ }
+  return [
+    "default-src 'self'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+    "object-src 'none'",
+    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${isDev ? " 'unsafe-eval'" : ''}`,
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "font-src 'self' data:",
+    `connect-src 'self'${supabaseOrigin ? ` ${supabaseOrigin}` : ''}${isDev ? ' ws:' : ''}`,
+    "worker-src 'self' blob:",
+    "manifest-src 'self'",
+    ...(isDev ? [] : ['upgrade-insecure-requests']),
+  ].join('; ');
+}
+
+function nextWithCsp(req: NextRequest, nonce: string, csp: string): NextResponse {
+  const requestHeaders = new Headers(req.headers);
+  // Next.js reads the nonce from the request CSP and applies it to its own
+  // bootstrap scripts. x-nonce is also available to future Server Components.
+  requestHeaders.set('x-nonce', nonce);
+  requestHeaders.set('Content-Security-Policy', csp);
+  const response = NextResponse.next({ request: { headers: requestHeaders } });
+  response.headers.set('Content-Security-Policy', csp);
+  return response;
+}
+
+function withCsp(response: NextResponse, csp: string): NextResponse {
+  response.headers.set('Content-Security-Policy', csp);
+  return response;
+}
+
 function activeUsers(): Set<string> {
   const out = new Set<string>();
   for (const pair of (process.env.AUTH_USERS || '').split(';')) {
@@ -41,20 +81,22 @@ async function verifyToken(token: string | undefined): Promise<boolean> {
 
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
+  const nonce = btoa(crypto.randomUUID());
+  const csp = contentSecurityPolicy(nonce);
   const ok = await verifyToken(req.cookies.get(SESSION_COOKIE)?.value);
 
   if (pathname === '/login') {
-    if (ok) return NextResponse.redirect(new URL('/', req.url));
-    return NextResponse.next();
+    if (ok) return withCsp(NextResponse.redirect(new URL('/', req.url)), csp);
+    return nextWithCsp(req, nonce, csp);
   }
-  if (ok) return NextResponse.next();
+  if (ok) return nextWithCsp(req, nonce, csp);
 
   if (pathname.startsWith('/api/')) {
-    return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+    return withCsp(NextResponse.json({ error: 'unauthorized' }, { status: 401 }), csp);
   }
   const login = new URL('/login', req.url);
   if (pathname !== '/') login.searchParams.set('next', pathname);
-  return NextResponse.redirect(login);
+  return withCsp(NextResponse.redirect(login), csp);
 }
 
 export const config = {

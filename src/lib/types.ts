@@ -64,7 +64,7 @@ export interface AnswerDiffRow {
 export interface AnswerDiff {
   fileName: string;
   sheet: string;
-  accuracy: number;              // eşleşen anahtar / cevaptaki anahtar (%)
+  accuracy: number;              // eşleşen / (cevap anahtarları + bizdeki fazla anahtarlar) (%)
   counts: { matched: number; qtyDiff: number; missing: number; extra: number };
   rows: AnswerDiffRow[];         // en fazla 200 satır (önce sorunlar)
   createdAt: string;

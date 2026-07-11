@@ -4,6 +4,7 @@ import { listCalibrations, saveCalibration, deleteCalibration } from '@/lib/stor
 import { CalibrationPostSchema, zodMessage } from '@/lib/schemas';
 import type { Calibration } from '@/lib/types';
 import { requireApiSession } from '@/lib/session';
+import { isUuid } from '@/lib/upload-policy';
 
 export const runtime = 'nodejs';
 
@@ -48,7 +49,12 @@ export async function DELETE(req: NextRequest) {
   const denied = await requireApiSession();
   if (denied) return denied;
   const id = req.nextUrl.searchParams.get('id');
-  if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });
-  await deleteCalibration(id);
-  return NextResponse.json({ ok: true });
+  if (!isUuid(id)) return NextResponse.json({ error: 'geçersiz id' }, { status: 400 });
+  try {
+    await deleteCalibration(id);
+    return NextResponse.json({ ok: true });
+  } catch (e) {
+    console.error('calibration delete failed', e);
+    return NextResponse.json({ error: 'silme başarısız' }, { status: 500 });
+  }
 }

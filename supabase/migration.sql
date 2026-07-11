@@ -1,4 +1,6 @@
--- Metriq v1 şema — Supabase SQL Editor'de bir kez çalıştır
+-- Eski/manual kurulumlar için geriye dönük başlangıç şeması.
+-- Tek başına tam migration zincirinin yerine geçmez. Yeni kurulumlarda kanonik
+-- kaynak supabase/migrations/ dizinidir; `supabase db reset` / `db push` kullanın.
 create table if not exists runs (
   id uuid primary key,
   project_name text not null,
@@ -128,7 +130,7 @@ from service_role;
 grant select, insert, update, delete on table public.runs to service_role;
 grant select, insert, delete on table public.mto_rows, public.steel_rows to service_role;
 grant select, insert, update, delete on table public.calibrations to service_role;
-grant select, insert, update on table public.notifications to service_role;
+grant select, insert, update, delete on table public.notifications to service_role;
 grant select, insert on table public.learning_events to service_role;
 grant select, insert, update, delete on table public.push_subscriptions to service_role;
 

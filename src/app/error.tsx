@@ -1,5 +1,7 @@
 'use client';
 // Beklenmedik hata — marka kimliği en kötü anda da korunur.
+import Link from 'next/link';
+
 export default function GlobalError({ reset }: { error: Error & { digest?: string }; reset: () => void }) {
   return (
     <div className="flex min-h-[70vh] items-center justify-center px-6">
@@ -12,7 +14,7 @@ export default function GlobalError({ reset }: { error: Error & { digest?: strin
         </p>
         <div className="mt-6 flex justify-center gap-2">
           <button onClick={reset} className="btn btn-primary">Tekrar dene</button>
-          <a href="/" className="btn">Panele dön</a>
+          <Link href="/" className="btn">Panele dön</Link>
         </div>
       </div>
     </div>

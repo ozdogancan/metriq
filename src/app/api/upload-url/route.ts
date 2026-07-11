@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
-import { isSupabase, signedUploadUrl } from '@/lib/store';
+import { isSupabase, reserveStoredUpload, signedUploadUrl } from '@/lib/store';
 import { isAllowedNwdSize, isSafeNwdFileName } from '@/lib/upload-policy';
 import { requireApiSession } from '@/lib/session';
 
@@ -23,6 +23,9 @@ export async function POST(req: NextRequest) {
     const runId = randomUUID();
     const signed = await signedUploadUrl(runId, fileName);
     if (!signed) return NextResponse.json({ mode: 'local' });
+    // If the browser uploads and disconnects before finalization, the private
+    // object becomes eligible for automatic cleanup after four hours.
+    await reserveStoredUpload(runId, fileName);
     const base = process.env.SUPABASE_URL!.replace(/\/$/, '');
     const bucket = process.env.SUPABASE_BUCKET || 'models';
     return NextResponse.json({

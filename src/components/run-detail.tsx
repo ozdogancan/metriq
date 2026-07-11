@@ -9,6 +9,7 @@ import {
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { t, type Lang } from '@/lib/i18n';
 import type { AnswerDiff, Calibration, MtoRow, Run, SteelRow } from '@/lib/types';
+import { MAX_ANSWER_XLSX_BYTES } from '@/lib/upload-policy';
 
 type Tab = 'rows' | 'steel' | 'info';
 
@@ -22,8 +23,8 @@ interface MtoTableMeta {
 // Sayısal hücre: teklif-kritik giriş. Taslak string state + blur/Enter'da commit —
 // her tuşta Number()'a çevirmek ondalık noktayı yutuyordu (12.5 → 125 hatası).
 // TR virgülü de kabul edilir; geçersiz giriş eski değere döner.
-function NumCell({ value, nullable, label, onCommit }: {
-  value: number | null; nullable?: boolean; label: string; onCommit: (v: number | null) => void;
+function NumCell({ value, nullable, positive, label, onCommit }: {
+  value: number | null; nullable?: boolean; positive?: boolean; label: string; onCommit: (v: number | null) => void;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
   const shown = draft ?? (value == null ? '' : String(value));
@@ -32,13 +33,14 @@ function NumCell({ value, nullable, label, onCommit }: {
     const raw = draft.trim().replace(',', '.');
     if (raw === '') { onCommit(nullable ? null : 0); setDraft(null); return; }
     const n = Number.parseFloat(raw);
-    if (Number.isFinite(n)) onCommit(n);
+    if (Number.isFinite(n) && (positive ? n > 0 : n >= 0)) onCommit(n);
     setDraft(null); // geçersizse eski değere döner
   }
   return (
     <input
       className="!text-right"
       inputMode="decimal"
+      min={positive ? Number.EPSILON : 0}
       aria-label={label}
       value={shown}
       onChange={e => setDraft(e.target.value)}
@@ -129,6 +131,10 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
 
   // müşteri cevap Excel'i: ground truth karşılaştırması ("bu dosyanın doğru cevabı bu")
   async function uploadAnswer(file: File) {
+    if (file.size <= 0 || file.size > MAX_ANSWER_XLSX_BYTES) {
+      toast.error(tr ? 'Cevap dosyası en fazla 4 MB olabilir.' : 'The answer file can be at most 4 MB.');
+      return;
+    }
     setAnswerBusy(true);
     try {
       const fd = new FormData();
@@ -400,7 +406,7 @@ const MTO_COLUMNS = [
     header: ctx => t(meta(ctx.table).lang, 'col_size1'),
     cell: ctx => {
       const m = meta(ctx.table); const r = ctx.row.original;
-      return <NumCell value={r.s1} nullable label={`${t(m.lang, 'col_size1')} ${r.code}`}
+      return <NumCell value={r.s1} nullable positive label={`${t(m.lang, 'col_size1')} ${r.code}`}
         onCommit={v => m.onEdit(r.id, { s1: v })} />;
     },
   }),

@@ -8,6 +8,7 @@
  * operates on an in-memory Buffer.
  */
 import * as zlib from 'node:zlib';
+import { asmeOdToNps, dnToNps } from '../pipe-sizes.ts';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -69,26 +70,11 @@ const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const FNUM = /^-?\d+(\.\d+)?$/;
 const DIGITS = /^\d+$/;
 
-// ASME B36.10 (carbon/stainless pipe) ODs
-const OD2NPS: Array<[number, number]> = [
-  [21.3, 0.5], [26.7, 0.75], [33.4, 1], [42.2, 1.25], [48.3, 1.5], [60.3, 2],
-  [73.0, 2.5], [88.9, 3], [114.3, 4], [141.3, 5], [168.3, 6], [219.1, 8],
-  [273.1, 10], [323.9, 12],
-];
 // DIN 11850-2 / EN 10357 (hygienic metric tube) ODs
 const OD2NPS_METRIC: Array<[number, number]> = [
   [19.0, 0.5], [23.0, 0.75], [29.0, 1], [35.0, 1.25], [41.0, 1.5], [53.0, 2],
   [70.0, 2.5], [85.0, 3], [104.0, 4], [129.0, 5], [154.0, 6], [204.0, 8], [254.0, 10],
 ];
-const DN2NPS: Record<number, number> = {
-  15: 0.5, 20: 0.75, 25: 1, 32: 1.25, 40: 1.5, 50: 2, 65: 2.5, 80: 3,
-  100: 4, 125: 5, 150: 6, 200: 8, 250: 10, 300: 12,
-};
-
-function od2nps(od: number): number | null {
-  for (const [o, n] of OD2NPS) if (Math.abs(o - od) <= 2.6) return n;
-  return null;
-}
 function od2npsMetric(od: number): number | null {
   for (const [o, n] of OD2NPS_METRIC) if (Math.abs(o - od) <= 1.6) return n;
   return null;
@@ -121,10 +107,19 @@ function okline(x: string | null | undefined): x is string {
 // ---------------------------------------------------------------------------
 
 const SLICE_CAP = 6_000_000;
-const MAX_ZLIB_CANDIDATES = 50_000;
-const MAX_ZLIB_BLOBS = 2_000;
-const MAX_INFLATED_BLOB_BYTES = 16 * 1024 * 1024;
-const MAX_TOTAL_INFLATED_BYTES = 256 * 1024 * 1024;
+// Keep enough headroom for the calibrated fixtures (456 candidates, 170
+// blobs, 2.3 MB largest blob, 20.2 MB total inflated) without letting a
+// crafted file consume most of a small server's memory/CPU budget.
+const MAX_ZLIB_CANDIDATES = 5_000;
+const MAX_ZLIB_BLOBS = 500;
+const MAX_INFLATED_BLOB_BYTES = 8 * 1024 * 1024;
+const MAX_TOTAL_INFLATED_BYTES = 64 * 1024 * 1024;
+const MAX_RECORDS_PER_BLOB = 75_000;
+const MAX_TOTAL_RECORDS = 300_000;
+const MAX_COMPONENT_SEGMENTS = 10_000;
+const MAX_STEEL_MEMBERS = 10_000;
+const MAX_FAILED_INFLATE_ATTEMPTS = 1_000;
+const MAX_ZLIB_SCAN_MS = 5_000;
 
 function inflateAt(data: Buffer, off: number): { out: Buffer; consumed: number } | null {
   const slice = data.subarray(off, off + SLICE_CAP);
@@ -171,10 +166,22 @@ export function findZlibBlobs(data: Buffer): Buffer[] {
   const blobs: Buffer[] = [];
   let used = 0;
   let totalInflated = 0;
+  let failedInflates = 0;
+  const scanStartedAt = Date.now();
   for (const off of cand) {
+    if (Date.now() - scanStartedAt > MAX_ZLIB_SCAN_MS) {
+      throw new Error('NWD sıkıştırılmış veri tarama süresini aşıyor.');
+    }
     if (off < used) continue;
     const r = inflateAt(data, off);
-    if (r && r.out.length >= 64) {
+    if (!r) {
+      failedInflates++;
+      if (failedInflates > MAX_FAILED_INFLATE_ATTEMPTS) {
+        throw new Error('NWD çok fazla bozuk sıkıştırılmış akış içeriyor.');
+      }
+      continue;
+    }
+    if (r.out.length >= 64) {
       totalInflated += r.out.length;
       if (totalInflated > MAX_TOTAL_INFLATED_BYTES) {
         throw new Error('NWD açılmış veri bütçesini aşıyor.');
@@ -217,6 +224,13 @@ export function parseStream(b: Buffer): Rec[] {
   const recs: Rec[] = [];
   const len = b.length;
 
+  const pushRecord = (record: Rec): void => {
+    if (recs.length >= MAX_RECORDS_PER_BLOB) {
+      throw new Error('NWD veri akışı kayıt bütçesini aşıyor.');
+    }
+    recs.push(record);
+  };
+
   // (a) compact: [0x01][ctr][vt=4][vlen][value]
   let pos = 0;
   for (;;) {
@@ -229,7 +243,7 @@ export function parseStream(b: Buffer): Rec[] {
     if (!(vlen > 0 && vlen <= 1000) || i + 16 + vlen > len) continue;
     const raw = b.subarray(i + 16, i + 16 + vlen);
     if (!printableAscii(raw, true)) continue;
-    recs.push({ pos: i, name: null, val: raw.toString('latin1') });
+    pushRecord({ pos: i, name: null, val: raw.toString('latin1') });
   }
 
   // (b) named/schema: [ctr][0x34][nlen][name][ilen][..ubiquity../[0]][vt][vlen][value]
@@ -261,9 +275,9 @@ export function parseStream(b: Buffer): Rec[] {
       const vlen = b.readUInt32LE(p2 + 4);
       if (!(vlen >= 0 && vlen <= 1000)) continue;
       const valBuf = b.subarray(p2 + 8, Math.min(p2 + 8 + vlen, len));
-      recs.push({ pos: i, name, val: valBuf.toString('utf8') }); // 'replace'-style decoding
+      pushRecord({ pos: i, name, val: valBuf.toString('utf8') }); // 'replace'-style decoding
     } else {
-      recs.push({ pos: i, name, val: null });
+      pushRecord({ pos: i, name, val: null });
     }
   }
 
@@ -362,11 +376,12 @@ function extract(c: RawComp): Item {
   for (let i = 0; i < v.length - 1; i++) {
     const a = v[i];
     const bv = v[i + 1];
-    if (a && bv && FNUM.test(a) && DIGITS.test(bv) && Object.prototype.hasOwnProperty.call(DN2NPS, parseInt(bv, 10))) {
+    if (a && bv && FNUM.test(a) && DIGITS.test(bv)) {
       const od = parseFloat(a);
       if (Number.isNaN(od)) continue;
-      const target = DN2NPS[parseInt(bv, 10)];
-      const m = od2nps(od);
+      const target = dnToNps(parseInt(bv, 10));
+      if (target === null) continue;
+      const m = asmeOdToNps(od);
       if (m !== null && Math.abs(target - m) < 0.01) { nps.push(m); continue; }
       const m2 = od2npsMetric(od);
       if (m2 !== null && Math.abs(target - m2) < 0.01) { nps.push(m2); metric = true; }
@@ -445,6 +460,9 @@ function extractSteel(blobRecs: Rec[][]): SteelMember[] {
       const key = `${profile}|${lengthMm.toFixed(1)}|${ctx}`;
       if (seen.has(key)) continue;
       seen.add(key);
+      if (members.length >= MAX_STEEL_MEMBERS) {
+        throw new Error('NWD çelik eleman bütçesini aşıyor.');
+      }
       members.push({ profile, lengthMm, kg });
     }
   }
@@ -458,8 +476,16 @@ function extractSteel(blobRecs: Rec[][]): SteelMember[] {
 export function parseNwd(buffer: Buffer): NwdResult {
   const blobs = findZlibBlobs(buffer);
 
-  const blobRecs: Rec[][] = blobs.map((b) => parseStream(b));
-  const totalRecords = blobRecs.reduce((s, r) => s + r.length, 0);
+  const blobRecs: Rec[][] = [];
+  let totalRecords = 0;
+  for (const blob of blobs) {
+    const recs = parseStream(blob);
+    totalRecords += recs.length;
+    if (totalRecords > MAX_TOTAL_RECORDS) {
+      throw new Error('NWD toplam kayıt bütçesini aşıyor.');
+    }
+    blobRecs.push(recs);
+  }
 
   // component segmentation (blobs with >= 50 records only, as in nwd_mto3.py)
   const allcomps: RawComp[] = [];
@@ -476,6 +502,9 @@ export function parseNwd(buffer: Buffer): NwdResult {
       const idx = starts[si];
       const end = si + 1 < starts.length ? starts[si + 1] : n;
       const seg = recs.slice(idx, end);
+      if (allcomps.length >= MAX_COMPONENT_SEGMENTS) {
+        throw new Error('NWD komponent bütçesini aşıyor.');
+      }
       allcomps.push({
         klass: seg[0].val as string,
         guid: seg[1].val as string,

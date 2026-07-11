@@ -1,12 +1,18 @@
 {
   "name": "metriq",
   "version": "0.1.0",
+  "type": "module",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "npm run test:pipe-sizes && npm run test:answer && npm run test:parser-guards && npm run test:upload-policy",
+    "test:pipe-sizes": "node scripts/check-pipe-sizes.mjs",
+    "test:answer": "node --conditions=react-server scripts/check-answer-compare.mjs",
+    "test:parser-guards": "node scripts/check-parser-guards.mjs",
+    "test:upload-policy": "node scripts/check-upload-policy.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.110.0",

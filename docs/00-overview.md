@@ -24,7 +24,7 @@
 5. **Parser**: `src/lib/parser/nwd.ts` — saf-TS NWD ayrıştırma; sözleşme sabit (`ParsedComponent`, `ParseResult`).
 6. **Kural motoru**: `src/lib/vocab.ts` — `CalibrationRules`'u bildirimsel uygular (tek nokta).
 7. **Tipler**: `src/lib/types.ts` — `MtoRow`, `Calibration`, `CalibrationRules`, `Run`; **tüm dokümanlar bu adlara sabitlenir**.
-8. **DB şeması**: `supabase/migration.sql` — `runs`, `mto_rows`, `steel_rows`, `calibrations` (+ `learning_events`, bkz. `02-learning.md`).
+8. **DB şeması**: `supabase/migrations/` (tarih sıralı, `supabase db reset` ile yeniden kurulabilir) — `runs`, `mto_rows`, `steel_rows`, `calibrations` (+ `learning_events`, bkz. `02-learning.md`).
 9. **AI katmanı**: `/api/runs/[id]/insight` — Gemini Flash özeti (opsiyonel, `GEMINI_API_KEY`).
 10. **i18n**: `src/lib/i18n.ts` — TR/EN.
 

@@ -1,21 +1,8 @@
 // Metriq — Excel dışa aktarım (müşteri formatı)
 import 'server-only';
 import ExcelJS from 'exceljs';
+import { npsToDn } from './pipe-sizes';
 import type { MtoRow, Run, SteelRow } from './types';
-
-const NPS2DN: Record<string, number> = {
-  '0.5': 15, '0.75': 20, '1': 25, '1.25': 32, '1.5': 40, '2': 50,
-  '2.5': 65, '3': 80, '4': 100, '5': 125, '6': 150, '8': 200, '10': 250, '12': 300,
-};
-
-// 14"+ için standart eşleme DN = inç × 25 (ASME B36.10: 14→350 … 24→600) —
-// tabloda olmayan büyük çaplar mm kolonunu sessizce boş bırakmasın.
-function npsToDn(s1: number | null | 0): number | '' {
-  if (s1 == null || s1 === 0) return '';
-  const hit = NPS2DN[String(s1)];
-  if (hit != null) return hit;
-  return s1 >= 14 ? Math.round(s1 * 25) : '';
-}
 
 const COPPER = 'FFC55A11';
 const HDR_FONT = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
@@ -55,7 +42,7 @@ export async function buildRunWorkbook(run: Run, rows: MtoRow[], steel: SteelRow
   for (const r of rows.filter(x => x.scope === 'MAIN')) {
     ws.addRow({
       i: i++, line: r.line, code: r.code, sub: r.sub,
-      mm1: npsToDn(r.s1), mm2: r.s2 ? (npsToDn(r.s2) || 0) : 0,
+      mm1: npsToDn(r.s1) ?? '', mm2: r.s2 ? (npsToDn(r.s2) ?? '') : 0,
       s1: r.s1 ?? '?', s2: r.s2 || 0,
       qty: r.unit === 'M' ? Math.round(r.qty * 1000) / 1000 : Math.round(r.qty),
       unit: r.unit, remark: r.remark + (r.edited ? ' [düzenlendi]' : ''),

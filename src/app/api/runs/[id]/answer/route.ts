@@ -29,7 +29,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       return NextResponse.json({ error: 'Cevap dosyası .xlsx olmalı.' }, { status: 400 });
     }
     if (file.size <= 0 || file.size > MAX_ANSWER_XLSX_BYTES) {
-      return NextResponse.json({ error: 'Cevap dosyası 15 MB sınırını aşıyor.' }, { status: 413 });
+      return NextResponse.json({ error: 'Cevap dosyası 4 MB sınırını aşıyor.' }, { status: 413 });
     }
     const buf = Buffer.from(await file.arrayBuffer());
     const { rows: answerRows, sheet } = await parseAnswerXlsx(buf);

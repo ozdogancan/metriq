@@ -2,9 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { after } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import {
-  listRuns, saveRun, saveRows, saveSteel, storeFile, fetchStoredFile, listCalibrations,
+  listRuns, saveRun, saveRows, saveSteel, storeFile, fetchStoredFile, deleteStoredFile,
+  beginFinalizeStoredUpload, claimStoredUpload, cancelStoredUpload, listCalibrations,
   updateRunMeta, addNotification, listPushSubscriptions, removePushSubscription, resolveStaleRun,
-  isSupabase, getRun,
+  isSupabase, getRun, drainStorageCleanup,
 } from '@/lib/store';
 import { parseNwd } from '@/lib/parser/nwd';
 import { applyRules, detectVocab } from '@/lib/vocab';
@@ -16,6 +17,7 @@ import {
   isAllowedNwdSize,
   isSafeNwdFileName,
   isUuid,
+  storageKeyName,
 } from '@/lib/upload-policy';
 import { requireApiSession } from '@/lib/session';
 
@@ -44,6 +46,23 @@ function normalizeMeta(raw: unknown, uploadedFileName?: string): RunCreateMeta |
   return { projectName, vocab, calibrationId, fileName };
 }
 
+async function resolveRuleSelection(meta: RunCreateMeta): Promise<{
+  rules: CalibrationRules;
+  autoDetect: boolean;
+} | null> {
+  let autoDetect = meta.vocab === 'auto';
+  let rules = autoDetect
+    ? DEFAULT_RULES['steel-plant']
+    : DEFAULT_RULES[meta.vocab as VocabProfileId];
+  if (meta.calibrationId) {
+    const cal = (await listCalibrations()).find(c => c.id === meta.calibrationId);
+    if (!cal) return null;
+    rules = cal.rules;
+    autoDetect = false;
+  }
+  return { rules, autoDetect };
+}
+
 export async function GET() {
   const denied = await requireApiSession();
   if (denied) return denied;
@@ -52,6 +71,10 @@ export async function GET() {
   const resolved = await Promise.all(
     runs.map(r => (r.status === 'processing' ? resolveStaleRun(r) : r)),
   );
+  after(async () => {
+    try { await drainStorageCleanup(5); }
+    catch (error) { console.error('storage cleanup retry failed', error); }
+  });
   return NextResponse.json(resolved);
 }
 
@@ -157,31 +180,55 @@ async function processRun(run: Run, buf: Buffer, rules: CalibrationRules, lang: 
     const body = lang === 'tr'
       ? `${main.length} satır · boru ${totals.pipeM.toFixed(1)} m${criticals ? ` · ⚠ ${criticals} kritik bulgu` : ''}`
       : `${main.length} rows · pipe ${totals.pipeM.toFixed(1)} m${criticals ? ` · ⚠ ${criticals} critical` : ''}`;
-    await addNotification({
-      id: randomUUID(), kind: 'run_done', title, body,
-      url: `/runs/${run.id}`, read: false, createdAt: new Date().toISOString(),
-    });
-    await sendPush({ title, body, url: `/runs/${run.id}`, tag: `run-${run.id}` });
+    try {
+      await addNotification({
+        id: randomUUID(), kind: 'run_done', title, body,
+        url: `/runs/${run.id}`, read: false, createdAt: new Date().toISOString(),
+      });
+      await sendPush({ title, body, url: `/runs/${run.id}`, tag: `run-${run.id}` });
+    } catch (notificationError) {
+      // The take-off is already durable and complete; notification transport
+      // failure must be visible in logs without corrupting the run status.
+      console.error('completion notification failed', notificationError);
+    }
   } catch (e) {
     console.error('pipeline hata', e);
     const msg = e instanceof Error ? e.message : 'işleme hatası';
     await updateRunMeta(run.id, { status: 'error', error: msg, progress: stages });
     const title = lang === 'tr' ? `Metraj başarısız: ${run.projectName}` : `Take-off failed: ${run.projectName}`;
-    await addNotification({
-      id: randomUUID(), kind: 'run_error', title, body: msg,
-      url: `/runs/${run.id}`, read: false, createdAt: new Date().toISOString(),
-    });
-    await sendPush({ title, body: msg, url: `/runs/${run.id}`, tag: `run-${run.id}` });
+    try {
+      await addNotification({
+        id: randomUUID(), kind: 'run_error', title, body: msg,
+        url: `/runs/${run.id}`, read: false, createdAt: new Date().toISOString(),
+      });
+      await sendPush({ title, body: msg, url: `/runs/${run.id}`, tag: `run-${run.id}` });
+    } catch (notificationError) {
+      console.error('error notification failed', notificationError);
+    }
   }
 }
 
 export async function POST(req: NextRequest) {
   const denied = await requireApiSession();
   if (denied) return denied;
+  let meta: RunCreateMeta | null = null;
+  let runId: string = randomUUID();
+  let fileStored = false;
+  let runSaved = false;
+  let directUpload = false;
+  const cleanupUnclaimedFile = async () => {
+    if (!fileStored || !meta) return;
+    try {
+      await deleteStoredFile(runId, meta.fileName);
+      await cancelStoredUpload(runId, meta.fileName);
+    } catch (cleanupError) {
+      console.error('unclaimed upload cleanup failed', cleanupError);
+    } finally {
+      fileStored = false;
+    }
+  };
   try {
     let buf: Buffer;
-    let meta: RunCreateMeta;
-    let runId: string = randomUUID();
     let fileSize = 0;
 
     const ctype = req.headers.get('content-type') || '';
@@ -204,7 +251,6 @@ export async function POST(req: NextRequest) {
       if (!hasNwdDataMarker(buf)) {
         return NextResponse.json({ error: 'Dosya geçerli bir NWD veri akışı içermiyor.' }, { status: 400 });
       }
-      await storeFile(runId, meta.fileName || file.name, buf);
     } else {
       const body = await req.json().catch(() => null) as Record<string, unknown> | null;
       const normalized = normalizeMeta(body);
@@ -213,31 +259,51 @@ export async function POST(req: NextRequest) {
       }
       meta = normalized;
       runId = body.runId;
+      directUpload = true;
       if (await getRun(runId)) {
         return NextResponse.json({ error: 'Bu yükleme kimliği zaten kullanılmış.' }, { status: 409 });
       }
-      const expectedPath = `${runId}/${meta.fileName}`;
+      const expectedPath = `${runId}/${storageKeyName(meta.fileName)}`;
       if (body.storagePath !== expectedPath) {
+        fileStored = true;
+        await cleanupUnclaimedFile();
         return NextResponse.json({ error: 'Yükleme yolu doğrulanamadı.' }, { status: 400 });
       }
+      // The signed-upload endpoint issued this exact runId/fileName pair. From
+      // here on, any rejected request must remove the unclaimed private object.
+      fileStored = true;
       buf = await fetchStoredFile(expectedPath);
       fileSize = buf.length;
       if (!isAllowedNwdSize(fileSize)) {
+        await cleanupUnclaimedFile();
         return NextResponse.json({ error: 'NWD dosyası 50 MB sınırını aşıyor.' }, { status: 413 });
       }
       if (!hasNwdDataMarker(buf)) {
+        await cleanupUnclaimedFile();
         return NextResponse.json({ error: 'Dosya geçerli bir NWD veri akışı içermiyor.' }, { status: 400 });
       }
     }
 
     // kurallar: kalibrasyon > açık profil > otomatik algılama (parse sonrası)
-    let autoDetect = meta.vocab === 'auto' || !meta.vocab;
-    let rules = autoDetect
-      ? DEFAULT_RULES['steel-plant'] // geçici — algılama parse'tan sonra kesinleşir
-      : (DEFAULT_RULES[meta.vocab as VocabProfileId] ?? DEFAULT_RULES['steel-plant']);
-    if (meta.calibrationId) {
-      const cal = (await listCalibrations()).find(c => c.id === meta.calibrationId);
-      if (cal) { rules = cal.rules; autoDetect = false; }
+    const selection = await resolveRuleSelection(meta);
+    if (!selection) {
+      await cleanupUnclaimedFile();
+      return NextResponse.json({ error: 'Seçilen kalibrasyon artık mevcut değil.' }, { status: 400 });
+    }
+    const { rules, autoDetect } = selection;
+
+    if (!fileStored) {
+      await storeFile(runId, meta.fileName, buf);
+      fileStored = true;
+    }
+    if (directUpload) {
+      const acquired = await beginFinalizeStoredUpload(runId, meta.fileName);
+      if (!acquired) {
+        // A cleanup worker already owns this expired reservation. It is no
+        // longer safe for this request to create a run that references it.
+        fileStored = false;
+        return NextResponse.json({ error: 'Yükleme rezervasyonu sona ermiş; dosyayı yeniden yükleyin.' }, { status: 409 });
+      }
     }
 
     const lang = (req.cookies.get('lang')?.value === 'en' ? 'en' : 'tr') as 'tr' | 'en';
@@ -256,6 +322,13 @@ export async function POST(req: NextRequest) {
       createdAt: new Date().toISOString(),
     };
     await saveRun(run);
+    runSaved = true;
+    try { if (directUpload) await claimStoredUpload(runId, meta.fileName); }
+    catch (claimError) {
+      // The sweeper checks for a live run before deleting, so a failed ack is
+      // safe and will reconcile without touching the owned source object.
+      console.error('upload reservation acknowledgement deferred', claimError);
+    }
 
     // yanıttan SONRA işle — istemci /runs/[id]'de canlı pipeline'ı izler
     after(() => processRun(run, buf, rules, lang, autoDetect));
@@ -263,6 +336,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ id: runId, status: 'processing' });
   } catch (e) {
     console.error('run create failed', e);
+    if (!runSaved) await cleanupUnclaimedFile();
     return NextResponse.json({ error: 'Yükleme işleme alınamadı.' }, { status: 500 });
   }
 }
