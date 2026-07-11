@@ -68,21 +68,8 @@ export async function buildRunWorkbook(run: Run, rows: MtoRow[], steel: SteelRow
     tr.font = { bold: true };
   }
 
-  // --- Kapsam dışı ---
-  const info = rows.filter(x => x.scope === 'INFO');
-  if (info.length) {
-    const ws3 = wb.addWorksheet('Kapsam Dışı (bilgi)');
-    styleHeader(ws3, [
-      { header: 'Line', key: 'line', width: 22 },
-      { header: 'Kalem', key: 'code', width: 18 },
-      { header: 'Alt Tip', key: 'sub', width: 20 },
-      { header: 'Size 1 (inch)', key: 's1', width: 11 },
-      { header: 'Miktar', key: 'qty', width: 10 },
-      { header: 'Birim', key: 'unit', width: 8 },
-      { header: 'Not', key: 'remark', width: 34 },
-    ]);
-    for (const r of info) ws3.addRow({ line: r.line, code: r.code, sub: r.sub, s1: r.s1 ?? '?', qty: r.unit === 'M' ? r.qty : Math.round(r.qty), unit: r.unit, remark: r.remark });
-  }
+  // (Kapsam dışı / bilgi sayfası kullanıcı talebiyle kaldırıldı — INFO satırları
+  // yalnız iç sınıflandırmada kalır; teklife girmeyen kalemler ayrı listelenmez.)
 
   // --- Yöntem ---
   const ws4 = wb.addWorksheet('Yöntem');

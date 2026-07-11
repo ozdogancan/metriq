@@ -11,7 +11,7 @@ import { t, type Lang } from '@/lib/i18n';
 import type { AnswerDiff, Calibration, MtoRow, Run, SteelRow } from '@/lib/types';
 import { MAX_ANSWER_XLSX_BYTES } from '@/lib/upload-policy';
 
-type Tab = 'rows' | 'steel' | 'info';
+type Tab = 'rows' | 'steel';
 
 // TanStack meta: hücre renderer'ları düzenleme callback'lerine buradan ulaşır
 interface MtoTableMeta {
@@ -79,9 +79,10 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
 
   const lines = useMemo(() => [...new Set(rows.map(r => r.line))].sort(), [rows]);
   const main = rows.filter(r => r.scope === 'MAIN');
-  const info = rows.filter(r => r.scope === 'INFO');
+  // INFO satırları (destek/refakat-flanşı/kapsam-dışı hat) artık ayrı sekmede
+  // GÖSTERİLMEZ ama veride kalır: teklif toplamı ve VANA sayımı doğru kalsın diye.
 
-  const visible = (tab === 'info' ? info : main).filter(r =>
+  const visible = main.filter(r =>
     (!lineFilter || r.line === lineFilter) &&
     (!q || `${r.code} ${r.sub} ${r.remark}`.toLowerCase().includes(q.toLowerCase()))
   );
@@ -97,7 +98,7 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
       id, line: lineFilter || '?', code: '', sub: '',
       s1: null, s2: 0, qty: 0, unit: 'EA',
       remark: tr ? 'elle eklendi' : 'added manually',
-      scope: tab === 'info' ? 'INFO' : 'MAIN', edited: true,
+      scope: 'MAIN', edited: true,
     };
     setRows(prev => [...prev, row]);
     setDirty(true); setSaving('idle');
@@ -309,7 +310,7 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
 
       {/* sekmeler + filtreler */}
       <div className="rise rise-3 flex flex-wrap items-center gap-2">
-        {([['rows', t(lang, 'run_rows'), main.length], ['steel', t(lang, 'run_steel'), steel.length], ['info', t(lang, 'run_info'), info.length]] as [Tab, string, number][]).map(([k, label, n]) => (
+        {([['rows', t(lang, 'run_rows'), main.length], ['steel', t(lang, 'run_steel'), steel.length]] as [Tab, string, number][]).map(([k, label, n]) => (
           <button key={k} onClick={() => setTab(k)}
             className={`btn ${tab === k ? '!border-copper/60 !bg-copper/10 !text-copper-bright' : 'btn-ghost'}`}>
             {label} <span className="font-data text-[10px] opacity-70">{n}</span>
