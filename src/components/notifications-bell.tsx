@@ -2,6 +2,7 @@
 // Metriq — bildirim çanı: uygulama-içi liste + masaüstü (web push) aboneliği.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { toast } from 'sonner';
 import type { AppNotification } from '@/lib/types';
 import { t, type Lang } from '@/lib/i18n';
 
@@ -50,7 +51,9 @@ export function NotificationsBell({ lang }: { lang: Lang }) {
     return () => { clearTimeout(initial); clearInterval(iv); document.removeEventListener('visibilitychange', onVis); };
   }, [refresh]);
 
-  // push durumu tespiti
+  // push durumu tespiti + KENDİ KENDİNİ ONARMA: yerel abonelik varsa sunucuya
+  // yeniden yazılır (upsert) — sunucudaki kayıt temizlenmişse "açık ama
+  // çalışmıyor" durumu sessizce iyileşir.
   useEffect(() => {
     (async () => {
       if (!('serviceWorker' in navigator) || !('PushManager' in window)) { setPushState('unsupported'); return; }
@@ -59,6 +62,12 @@ export function NotificationsBell({ lang }: { lang: Lang }) {
         const reg = await navigator.serviceWorker.register('/sw.js');
         const sub = await reg.pushManager.getSubscription();
         setPushState(sub ? 'on' : 'off');
+        if (sub) {
+          fetch('/api/push', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ subscription: sub.toJSON() }),
+          }).catch(() => { /* sıradaki açılışta tekrar dener */ });
+        }
       } catch { setPushState('off'); }
     })();
   }, []);
@@ -131,8 +140,51 @@ export function NotificationsBell({ lang }: { lang: Lang }) {
       });
       if (!res.ok) { setPushErr(t(lang, 'push_error')); return; }
       setPushState('on');
+      toast.success(lang === 'tr' ? 'Masaüstü bildirimleri açıldı.' : 'Desktop notifications enabled.');
     } catch {
       // sessiz başarısızlık yerine panelde küçük hata metni
+      setPushErr(t(lang, 'push_error'));
+    }
+  }
+
+  // Kapat: yerel aboneliği iptal et + sunucudaki kaydı sil
+  async function disablePush() {
+    setPushErr('');
+    try {
+      const reg = await navigator.serviceWorker.register('/sw.js');
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) {
+        const endpoint = sub.endpoint;
+        await sub.unsubscribe();
+        await fetch('/api/push', {
+          method: 'DELETE', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ endpoint }),
+        }).catch(() => { /* sunucu kaydı bir sonraki gönderimde 410 ile temizlenir */ });
+      }
+      setPushState('off');
+      toast.success(lang === 'tr' ? 'Masaüstü bildirimleri kapatıldı.' : 'Desktop notifications disabled.');
+    } catch {
+      setPushErr(t(lang, 'push_error'));
+    }
+  }
+
+  // Test: force'lu gerçek push — sekmeye bakarken bile OS bildirimi düşer
+  async function sendTestPush() {
+    setPushErr('');
+    try {
+      const r = await fetch('/api/push/test', { method: 'POST' });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+      if (d.subscriptions === 0) {
+        setPushErr(lang === 'tr'
+          ? 'Sunucuda abonelik bulunamadı — kapatıp yeniden aç.'
+          : 'No subscription on the server — turn off and re-enable.');
+        return;
+      }
+      toast.success(lang === 'tr'
+        ? 'Test gönderildi — birkaç saniye içinde masaüstü bildirimi düşmeli.'
+        : 'Test sent — a desktop notification should appear within seconds.');
+    } catch {
       setPushErr(t(lang, 'push_error'));
     }
   }
@@ -169,18 +221,45 @@ export function NotificationsBell({ lang }: { lang: Lang }) {
                 {lang === 'tr' ? 'tümünü temizle' : 'clear all'}
               </button>
             )}
-            {pushState !== 'unsupported' && (
-              pushState === 'on' ? (
-                <span className="chip"><span className="chip-dot" style={{ background: 'var(--color-mint)' }} />{lang === 'tr' ? 'masaüstü açık' : 'desktop on'}</span>
+          </div>
+          {/* masaüstü bildirim şeridi: durum + aç/kapat + test */}
+          {pushState !== 'unsupported' && (
+            <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-2">
+              <span className="font-data text-[10.5px] text-muted">🖥 {lang === 'tr' ? 'Masaüstü' : 'Desktop'}</span>
+              {pushState === 'on' ? (
+                <>
+                  <span className="chip"><span className="chip-dot" style={{ background: 'var(--color-mint)' }} />{lang === 'tr' ? 'açık' : 'on'}</span>
+                  <button onClick={sendTestPush}
+                    className="chip transition-colors hover:border-copper/50 hover:text-copper-bright"
+                    title={lang === 'tr' ? 'Şimdi bir test bildirimi gönder — çalıştığını gör' : 'Send a test notification now'}>
+                    {lang === 'tr' ? 'test gönder' : 'send test'}
+                  </button>
+                  <button onClick={disablePush}
+                    className="chip ml-auto text-muted transition-colors hover:border-danger/50 hover:text-danger"
+                    title={lang === 'tr' ? 'Masaüstü bildirimlerini kapat' : 'Turn off desktop notifications'}>
+                    {lang === 'tr' ? 'kapat' : 'turn off'}
+                  </button>
+                </>
               ) : pushState === 'denied' ? (
-                <span className="chip text-muted">{lang === 'tr' ? 'tarayıcıdan engelli' : 'blocked'}</span>
+                <span className="font-data text-[10.5px] text-muted">
+                  {lang === 'tr'
+                    ? 'tarayıcıdan engelli — adres çubuğundaki kilit ikonundan bildirim iznini aç'
+                    : 'blocked by the browser — allow notifications from the address-bar lock icon'}
+                </span>
               ) : (
                 <button onClick={enablePush} className="chip transition-colors hover:border-copper/50 hover:text-copper-bright">
-                  {lang === 'tr' ? '🖥 masaüstü bildirimlerini aç' : '🖥 enable desktop'}
+                  {lang === 'tr' ? 'aç' : 'enable'}
                 </button>
-              )
-            )}
-          </div>
+              )}
+              {pushState === 'on' && (
+                <span className="w-full font-data text-[9.5px] leading-snug text-muted">
+                  {lang === 'tr'
+                    ? 'Not: uygulamaya bakarken OS bildirimi bastırılır (çan yeter) — sekme kapalı/arka plandayken düşer.'
+                    : 'Note: while you are viewing the app, OS notifications are suppressed (the bell suffices) — they appear when the tab is closed/in background.'}
+                </span>
+              )}
+            </div>
+          )}
           {/* masaüstü bildirim açma başarısız olursa panelde küçük kırmızı metin */}
           {pushErr && (
             <div className="border-b border-line px-4 py-2 text-[11px] text-danger" role="alert">

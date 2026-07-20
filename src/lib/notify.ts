@@ -2,7 +2,8 @@
 import 'server-only';
 import { listPushSubscriptions, removePushSubscription } from '@/lib/store';
 
-export async function sendPush(payload: { title: string; body: string; url: string; tag?: string }) {
+// force: sekme görünür olsa bile OS bildirimi göster (sw.js bastırmayı atlar) — test için
+export async function sendPush(payload: { title: string; body: string; url: string; tag?: string; force?: boolean }) {
   const pub = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY, priv = process.env.VAPID_PRIVATE_KEY;
   const subject = process.env.VAPID_SUBJECT;
   if (!pub || !priv || !subject) return;
