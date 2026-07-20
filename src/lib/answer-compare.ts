@@ -113,12 +113,42 @@ function assertSafeXlsxArchive(buf: Buffer): void {
   }
 }
 
-// Makro/gömülü parçalar (vbaProject, drawing, activeX, chart, media…) hücre verisi
-// için gereksizdir ve exceljs'i Vercel çalışma zamanında YAKALANAMAZ biçimde
-// çökertebilir (gerçek vaka: Grissan .xlsm — süreç ölür, catch çalışamaz, HTML 500).
-// Çözüm: parse'tan önce arşivden bu parçaları at. Veri bayt-kopya taşınır
-// (yeniden sıkıştırma yok); yerel+merkez başlıklar temiz yeniden yazılır.
-const RISKY_XLSX_PART = /^(?:xl\/(?:vbaProject|media\/|drawings\/|charts?\/|embeddings\/|activeX\/|printerSettings\/|ctrlProps\/|threadedComments\/|pivotTables\/|pivotCache\/|calcChain\.xml$|oleObject)|customXml\/|docProps\/thumbnail)/i;
+// Hücre verisi İÇİN GEREKMEYEN her parça (vbaProject, drawing, externalLink,
+// metadata, webextension, 692KB'lık definedNames yığını…) exceljs'i Vercel
+// çalışma zamanında YAKALANAMAZ biçimde çökertebilir (gerçek vaka: Grissan .xlsm —
+// süreç ölür, catch çalışamaz, HTML 500). Çözüm ALLOWLIST: yalnız değer-taşıyan
+// parçalar tutulur, workbook/sheet/rels XML'leri düşürülen parçalara işaret eden
+// elemanlardan arındırılır. Veri bayt-kopya taşınır (dönüşen XML'ler hariç).
+const KEEP_XLSX_PART = /^(?:\[Content_Types\]\.xml|_rels\/\.rels|docProps\/(?:core|app)\.xml|xl\/(?:workbook\.xml|_rels\/workbook\.xml\.rels|worksheets\/[^/]+\.xml|sharedStrings\.xml|styles\.xml|theme\/[^/]+\.xml))$/i;
+
+// sayfa XML'i: düşürülen parça referansları + değer-dışı bloklar
+function cleanSheetXml(xml: string): string {
+  return xml
+    .replace(/<drawing\b[^>]*\/>/gi, '')
+    .replace(/<legacyDrawing(?:HF)?\b[^>]*\/>/gi, '')
+    .replace(/<picture\b[^>]*\/>/gi, '')
+    .replace(/<oleObjects\b[\s\S]*?<\/oleObjects>|<oleObjects\b[^>]*\/>/gi, '')
+    .replace(/<controls\b[\s\S]*?<\/controls>|<controls\b[^>]*\/>/gi, '')
+    .replace(/<tableParts\b[\s\S]*?<\/tableParts>|<tableParts\b[^>]*\/>/gi, '')
+    .replace(/<hyperlinks\b[\s\S]*?<\/hyperlinks>|<hyperlinks\b[^>]*\/>/gi, '')
+    .replace(/<extLst\b[\s\S]*?<\/extLst>/gi, '');
+}
+
+// workbook.xml: dış referanslar, definedNames yığını, pivot önbelleği vb. atılır
+function cleanWorkbookXml(xml: string): string {
+  return xml
+    .replace(/<externalReferences\b[\s\S]*?<\/externalReferences>|<externalReferences\b[^>]*\/>/gi, '')
+    .replace(/<definedNames\b[\s\S]*?<\/definedNames>|<definedNames\b[^>]*\/>/gi, '')
+    .replace(/<pivotCaches\b[\s\S]*?<\/pivotCaches>|<pivotCaches\b[^>]*\/>/gi, '')
+    .replace(/<customWorkbookViews\b[\s\S]*?<\/customWorkbookViews>/gi, '')
+    .replace(/<extLst\b[\s\S]*?<\/extLst>/gi, '');
+}
+
+// workbook.xml.rels: yalnız tutulan parçalara giden ilişkiler kalır
+function cleanWorkbookRels(xml: string): string {
+  return xml.replace(/<Relationship\b[^>]*\/>/gi, m =>
+    /Target="(?:worksheets\/[^"]+|sharedStrings\.xml|styles\.xml|theme\/[^"]+)"/i.test(m) ? m : '');
+}
 
 export function stripRiskyXlsxParts(buf: Buffer): Buffer {
   let eocd = -1;
@@ -147,22 +177,19 @@ export function stripRiskyXlsxParts(buf: Buffer): Buffer {
     const name = buf.subarray(pos + 46, pos + 46 + nameLen);
     pos += 46 + nameLen + extraLen + commentLen;
     const nameStr = name.toString('utf8');
-    if (RISKY_XLSX_PART.test(nameStr)) continue;
+    if (!KEEP_XLSX_PART.test(nameStr)) continue;
     const localNameLen = buf.readUInt16LE(localOffset + 26);
     const localExtraLen = buf.readUInt16LE(localOffset + 28);
     const dataStart = localOffset + 30 + localNameLen + localExtraLen;
     const entry: Kept = { name: Buffer.from(name), method, time, date, crc, compressed, uncompressed, data: buf.subarray(dataStart, dataStart + compressed) };
-    // Sayfa XML'i düşürülen parçalara işaret etmesin: <drawing/>, <legacyDrawing/>,
-    // <oleObjects>, <controls>, <picture/> referansları temizlenir — yoksa exceljs
-    // reconcile aşamasında eksik drawing'e uzanır ve yine çöker.
-    if (/^xl\/worksheets\/[^/]+\.xml$/i.test(nameStr)) {
+    const transform =
+      /^xl\/worksheets\/[^/]+\.xml$/i.test(nameStr) ? cleanSheetXml
+        : /^xl\/workbook\.xml$/i.test(nameStr) ? cleanWorkbookXml
+          : /^xl\/_rels\/workbook\.xml\.rels$/i.test(nameStr) ? cleanWorkbookRels
+            : null;
+    if (transform) {
       const xml = (method === 0 ? entry.data : inflateRawSync(entry.data, { maxOutputLength: MAX_XLSX_ENTRY_BYTES + 1 })).toString('utf8');
-      const cleaned = xml
-        .replace(/<drawing\b[^>]*\/>/gi, '')
-        .replace(/<legacyDrawing(?:HF)?\b[^>]*\/>/gi, '')
-        .replace(/<picture\b[^>]*\/>/gi, '')
-        .replace(/<oleObjects\b[\s\S]*?<\/oleObjects>|<oleObjects\b[^>]*\/>/gi, '')
-        .replace(/<controls\b[\s\S]*?<\/controls>|<controls\b[^>]*\/>/gi, '');
+      const cleaned = transform(xml);
       if (cleaned !== xml) {
         const raw = Buffer.from(cleaned, 'utf8');
         entry.data = deflateRawSync(raw);
