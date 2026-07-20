@@ -4,10 +4,12 @@ import { randomUUID } from 'node:crypto';
 import {
   listRuns, saveRun, saveRows, saveSteel, storeFile, fetchStoredFile, deleteStoredFile,
   beginFinalizeStoredUpload, claimStoredUpload, cancelStoredUpload, listCalibrations,
-  updateRunMeta, addNotification, listPushSubscriptions, removePushSubscription, resolveStaleRun,
+  updateRunMeta, addNotification, resolveStaleRun,
   isSupabase, getRun, drainStorageCleanup,
 } from '@/lib/store';
+import { sendPush } from '@/lib/notify';
 import { parseNwd } from '@/lib/parser/nwd';
+import { apsEnabled, apsSubmit } from '@/lib/aps';
 import { applyRules, detectVocab } from '@/lib/vocab';
 import { computeComplexity, runAudit, aiEnabled } from '@/lib/ai';
 import { DEFAULT_RULES, STAGE_ORDER, type Run, type StageEvent, type VocabProfileId, type CalibrationRules } from '@/lib/types';
@@ -89,23 +91,6 @@ function stageSet(stages: StageEvent[], key: StageEvent['key'], status: StageEve
     : s);
 }
 
-async function sendPush(payload: { title: string; body: string; url: string; tag?: string }) {
-  const pub = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY, priv = process.env.VAPID_PRIVATE_KEY;
-  const subject = process.env.VAPID_SUBJECT;
-  if (!pub || !priv || !subject) return;
-  const subs = await listPushSubscriptions();
-  if (!subs.length) return;
-  const webpush = (await import('web-push')).default;
-  webpush.setVapidDetails(subject, pub, priv);
-  await Promise.allSettled(subs.map(async s => {
-    try {
-      await webpush.sendNotification(s as unknown as import('web-push').PushSubscription, JSON.stringify({ ...payload, icon: '/icon.png' }));
-    } catch (e) {
-      const code = (e as { statusCode?: number }).statusCode;
-      if (code === 404 || code === 410) await removePushSubscription(s.endpoint);
-    }
-  }));
-}
 
 // ---- arka plan pipeline: aşama aşama gerçek metriklerle ilerleme yazar ----
 async function processRun(run: Run, buf: Buffer, rules: CalibrationRules, lang: 'tr' | 'en', autoDetect = false) {
@@ -117,9 +102,27 @@ async function processRun(run: Run, buf: Buffer, rules: CalibrationRules, lang: 
     stages = stageSet(stages, 'scan', 'active');
     await push();
 
-    const parsed = parseNwd(buf);
-    if (parsed.stats.blobCount === 0 || parsed.stats.recordCount === 0) {
-      throw new Error('Geçerli NWD veri akışı bulunamadı.');
+    // Yerel Plant3D string-kazıyıcı: yapısal veri yoksa (Revit/AutoCAD-solid NWD)
+    // APS bulut yoluna düşer — çeviri asenkron sürer, istemci /advance ile ilerletir.
+    let parsed: ReturnType<typeof parseNwd> | null = null;
+    try {
+      parsed = parseNwd(buf);
+      if (parsed.stats.blobCount === 0 || parsed.stats.recordCount === 0) parsed = null;
+    } catch (parseError) {
+      if (!apsEnabled) throw parseError;
+      parsed = null;
+    }
+    if (!parsed || parsed.components.length === 0) {
+      if (!apsEnabled) throw new Error('Geçerli NWD veri akışı bulunamadı.');
+      stages = stageSet(stages, 'scan', 'active', { 'bulut': 'Autodesk çevirisi başlatıldı' });
+      const objectKey = `${run.id}-${storageKeyName(run.fileName)}`;
+      const { urn } = await apsSubmit(objectKey, buf);
+      await updateRunMeta(run.id, {
+        progress: stages,
+        aps: { urn, objectKey, submittedAt: new Date().toISOString() },
+      });
+      console.log(`[aps] ${run.fileName} bulut çevirisine gönderildi (yerel komponent yok)`);
+      return; // tamamlama /api/runs/[id]/advance üzerinden
     }
 
     // otomatik tesisat algılama: kural seti dosyanın kendi imzasından seçilir

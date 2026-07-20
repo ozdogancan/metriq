@@ -33,6 +33,15 @@ export interface RunTotals {
   lines: string[];
 }
 
+// APS bulut çıkarım işi: yerel parser yapısal veri bulamayınca devreye girer.
+// Çeviri dakikalar sürer; istemci /advance endpoint'i ile ilerletir.
+export interface RunApsJob {
+  urn: string;
+  objectKey: string;
+  guid?: string;
+  submittedAt: string;
+}
+
 export interface Run {
   id: string;
   projectName: string;
@@ -42,6 +51,7 @@ export interface Run {
   calibrationId: string | null;
   status: 'processing' | 'done' | 'error';
   error?: string;
+  aps?: RunApsJob | null;
   totals: RunTotals;
   fasteners: { gaskets: number; boltSets: number; stubEnds: number };
   progress?: StageEvent[];

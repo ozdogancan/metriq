@@ -82,6 +82,7 @@ export async function saveRun(run: Run): Promise<void> {
     if (run.rowRevision !== undefined) payload.row_revision = run.rowRevision;
     if (run.rowsHash !== undefined) payload.rows_hash = run.rowsHash;
     if (run.comparisonRevision !== undefined) payload.comparison_revision = run.comparisonRevision;
+    if (run.aps !== undefined) payload.aps = run.aps;
     const { error } = await client().from('runs').upsert(payload);
     if (error) throw error;
     return;
@@ -622,12 +623,13 @@ function dbRun(r: Record<string, unknown>): Run {
     rowRevision: Number(r.row_revision ?? 0),
     rowsHash: (r.rows_hash as string | null) ?? null,
     comparisonRevision: Number(r.comparison_revision ?? 0),
+    aps: (r.aps as Run['aps']) ?? null,
     createdAt: r.created_at as string,
   };
 }
 
 // ---------- Çalışma ilerlemesi + AI (v2) ----------
-export async function updateRunMeta(runId: string, patch: { progress?: import('./types').StageEvent[]; ai?: import('./types').AiAudit | null; status?: Run['status']; error?: string; totals?: Run['totals']; fasteners?: Run['fasteners']; vocab?: Run['vocab']; answer?: Run['answer']; calibrationId?: Run['calibrationId'] }): Promise<void> {
+export async function updateRunMeta(runId: string, patch: { progress?: import('./types').StageEvent[]; ai?: import('./types').AiAudit | null; status?: Run['status']; error?: string; totals?: Run['totals']; fasteners?: Run['fasteners']; vocab?: Run['vocab']; answer?: Run['answer']; calibrationId?: Run['calibrationId']; aps?: Run['aps'] }): Promise<void> {
   if (isSupabase) {
     const db: Record<string, unknown> = {};
     if (patch.progress !== undefined) db.progress = patch.progress;
@@ -639,6 +641,7 @@ export async function updateRunMeta(runId: string, patch: { progress?: import('.
     if (patch.vocab !== undefined) db.vocab = patch.vocab;
     if (patch.answer !== undefined) db.answer = patch.answer;
     if (patch.calibrationId !== undefined) db.calibration_id = patch.calibrationId;
+    if (patch.aps !== undefined) db.aps = patch.aps;
     const { error } = await client().from('runs').update(db).eq('id', runId);
     if (error) throw error;
     return;
@@ -655,13 +658,17 @@ export async function updateRunMeta(runId: string, patch: { progress?: import('.
 
 // ---------- Bayat işlem bekçisi (watchdog) ----------
 const STALE_PROCESSING_MS = 15 * 60 * 1000; // 15 dk
+const STALE_APS_MS = 60 * 60 * 1000;        // bulut çevirisi (APS) dakikalar sürer — 60 dk tavan
 
-// 15 dk'yı aşan 'processing' run'ı hataya çevirir (pipeline sessizce ölmüşse kullanıcı sonsuz beklemesin)
+// Süresi aşan 'processing' run'ı hataya çevirir (pipeline sessizce ölmüşse kullanıcı sonsuz beklemesin)
 export async function resolveStaleRun(run: Run): Promise<Run> {
   if (run.status !== 'processing') return run;
+  const limit = run.aps ? STALE_APS_MS : STALE_PROCESSING_MS;
   const age = Date.now() - new Date(run.createdAt).getTime();
-  if (!Number.isFinite(age) || age <= STALE_PROCESSING_MS) return run;
-  const error = 'İşlem zaman aşımına uğradı (15 dk) — dosyayı yeniden yükleyin';
+  if (!Number.isFinite(age) || age <= limit) return run;
+  const error = run.aps
+    ? 'Bulut çevirisi zaman aşımına uğradı (60 dk) — dosyayı yeniden yükleyin'
+    : 'İşlem zaman aşımına uğradı (15 dk) — dosyayı yeniden yükleyin';
   await updateRunMeta(run.id, { status: 'error', error });
   return { ...run, status: 'error', error };
 }

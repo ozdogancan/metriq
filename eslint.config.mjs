@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Yerel deney/kalibrasyon harness'ı — ürün kodu değil (APS reçete deneyleri):
+    "_aps/**",
   ]),
 ]);
 
