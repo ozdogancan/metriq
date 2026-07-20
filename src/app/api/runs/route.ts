@@ -134,6 +134,8 @@ async function processRun(run: Run, buf: Buffer, rules: CalibrationRules, lang: 
       console.log(`[aps] ${run.fileName} bulut çevirisine gönderildi (${reason})`);
       return; // tamamlama /api/runs/[id]/advance üzerinden
     }
+    // Tip daraltma: yukarıdaki iki dal null'u imkânsız kılar (apsEnabled true→return, false→throw)
+    if (!parsed) throw new Error('Geçerli NWD veri akışı bulunamadı.');
 
     // otomatik tesisat algılama: kural seti dosyanın kendi imzasından seçilir
     // (hijyenik: TRU-BORE/DIN 11850 · çelik: ASME/WELD NECK/A105)
