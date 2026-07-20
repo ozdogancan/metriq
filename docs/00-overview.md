@@ -10,6 +10,7 @@
 |---|---|---|
 | 1. Yükle | `src/app/api/upload-url/route.ts`, `src/components/upload-zone.tsx` | NWD dosyası → Storage (`models` bucket / `.data/files`) |
 | 2. Ayrıştır | `src/lib/parser/nwd.ts` — `parseNwd(buf)` | NWD → `ParseResult { components, steelMembers, fasteners, stats }` |
+| 2b. Bulut çıkarım | `src/lib/aps.ts` + `src/lib/parser/aps-extract.ts` | Yerel parser 0-komponent/boyutsuz ise Autodesk APS: NWD → çeviri → property → `MtoRow[]` (Revit/Plant3D-DWG aileleri) |
 | 3. Kural uygula | `src/lib/vocab.ts` — `applyRules(parsed, rules)` | `ParseResult` + `CalibrationRules` → `MtoRow[]`, `SteelRow[]`, `RunTotals` |
 | 4. Düzelt | `src/components/run-detail.tsx` | Kullanıcı satır düzenler (`MtoRow.edited=true`) → `learning_event` |
 | 5. Öğren | Kalibrasyon katmanı (`src/app/(app)/calibrations`) | learning_events deseni → `CalibrationRules` önerisi → onay → `Calibration` kaydı |
@@ -27,6 +28,20 @@
 8. **DB şeması**: `supabase/migrations/` (tarih sıralı, `supabase db reset` ile yeniden kurulabilir) — `runs`, `mto_rows`, `steel_rows`, `calibrations` (+ `learning_events`, bkz. `02-learning.md`).
 9. **AI katmanı**: `/api/runs/[id]/insight` — Gemini Flash özeti (opsiyonel, `GEMINI_API_KEY`).
 10. **i18n**: `src/lib/i18n.ts` — TR/EN.
+
+## Bulut çıkarım yolu (APS) — 2026-07-20
+
+Yerel string-kazıyıcı yalnız AutoCAD Plant3D exportlarını okur. Yapısal veri **yoksa**
+(Revit MEP) veya **boyutsuz** kalırsa (karışık AutoCAD, boyutlu oran <%30) run otomatik
+Autodesk Platform Services'a düşer: OSS upload → Model Derivative çeviri (asenkron,
+dakikalar) → property koleksiyonu → `extractFromApsProps`. Çeviri Vercel 300sn sınırını
+aştığı için tamamlama **istemci-güdümlü** `/api/runs/[id]/advance` ile ilerler (ProcessingLive
+4sn ping + 60dk watchdog; DB-seviyesi `claimApsRun` çift-tamamlamayı önler).
+
+İki yapısal aile (`aps-extract.ts`): **revit** (Element.Category + `Custom["Description BOM"]`,
+hat=Vic_Area_PT) ve **plant3d-dwg** (Item.Type=ACPP*, hat=çizim adı). Mesh/dumb-solid
+modellerde (`family:'none'`) satır üretilmez — **asla uydurma yok**. Öğrenilmiş profil
+bulut yolunda da otomatik uygulanır (`advance/resolveRules`).
 
 ## Öğrenme döngüsü
 

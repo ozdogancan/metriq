@@ -13,6 +13,7 @@ export const maxDuration = 60;
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function POST(req: NextRequest, ctx: Ctx) {
+  try {
   const denied = await requireApiSession();
   if (denied) return denied;
   const actor = (await getSessionUser())!;
@@ -22,7 +23,6 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   if (run.status !== 'done') {
     return NextResponse.json({ error: 'Karşılaştırma için metrajın tamamlanmış olması gerekir.' }, { status: 409 });
   }
-  try {
     const fd = await req.formData();
     const file = fd.get('file') as File | null;
     if (!file) return NextResponse.json({ error: 'dosya eksik' }, { status: 400 });
@@ -66,6 +66,16 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     const msg = e instanceof Error && e.message.startsWith('Cevap dosya')
       ? e.message
       : 'Cevap dosyası güvenli biçimde işlenemedi.';
-    return NextResponse.json({ error: msg }, { status: 400 });
+    // GEÇİCİ TEŞHİS: prod-only 500'ün gerçek sebebini yüzeye çıkar (sonra kaldırılacak)
+    return NextResponse.json({
+      error: msg,
+      _debug: {
+        name: e instanceof Error ? e.name : typeof e,
+        message: e instanceof Error ? e.message : String(e),
+        code: (e as { code?: string; details?: string })?.code,
+        details: (e as { details?: string })?.details,
+        stack: (e instanceof Error ? e.stack : '')?.split('\n').slice(0, 5).join(' | '),
+      },
+    }, { status: 400 });
   }
 }
