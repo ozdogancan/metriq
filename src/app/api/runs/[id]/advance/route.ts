@@ -6,7 +6,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { apsAdvance } from '@/lib/aps';
 import { extractFromApsProps } from '@/lib/parser/aps-extract';
-import { getRun, saveRows, saveSteel, updateRunMeta, addNotification, listCalibrations, claimApsRun } from '@/lib/store';
+import { getRun, saveRows, saveSteel, updateRunMeta, addNotification, listCalibrations, claimApsRun, putRunArtifact } from '@/lib/store';
 import { sendPush } from '@/lib/notify';
 import { computeComplexity, runAudit, aiEnabled } from '@/lib/ai';
 import { DEFAULT_RULES, type CalibrationRules, type Run, type StageEvent } from '@/lib/types';
@@ -120,6 +120,9 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
 
     await saveRows(id, ex.rows);
     await saveSteel(id, []);
+    // "modelde göster": satır→dbId eşlemesi (viewer izole+zoom) — fail-soft, metraj bundan bağımsız
+    try { await putRunArtifact(id, 'objectmap.json', ex.objectMap); }
+    catch (e) { console.error('objectmap artifact yazılamadı (fail-soft)', e); }
 
     const complexity = computeComplexity({
       fileMb: run.fileSize / 1e6,

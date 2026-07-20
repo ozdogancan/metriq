@@ -17,7 +17,14 @@ export interface ApsExtractResult {
   structuredCount: number;   // MTO'ya katkı veren obje sayısı
   totalCount: number;        // koleksiyondaki toplam obje
   lineCount: number;
+  // satır id → APS viewer dbId listesi ("modelde göster" izole+zoom için).
+  // Satır başına MAX_OIDS_PER_ROW ile sınırlı — devasa toplamalarda bölgeyi göstermek yeter.
+  objectMap: Record<string, number[]>;
 }
+
+const MAX_OIDS_PER_ROW = 500;
+// aggregation sırasında taşınan geçici viewer-id alanı (DB'ye yazılmadan sökülür)
+type RawRow = MtoRow & { _oids?: number[] };
 
 type ApsObject = {
   objectid?: number;
@@ -62,7 +69,7 @@ function revitSizes(E: Record<string, string>): [number | null, number] {
   return [dnToNps(s1mm), s2mm ? (dnToNps(s2mm) ?? 0) : 0];
 }
 
-function extractRevit(col: ApsObject[], out: MtoRow[]): number {
+function extractRevit(col: ApsObject[], out: RawRow[]): number {
   // Solid alt-objeleri aynı Element.Id'yi taşır — Length'i olan kaydı tut
   const byId = new Map<string, ApsObject>();
   for (const o of col) {
@@ -87,11 +94,12 @@ function extractRevit(col: ApsObject[], out: MtoRow[]): number {
     const line = C['Vic_Area_PT'] || E['System Name'] || '?';
     const scope = dns ? 'INFO' as const : 'MAIN' as const;
     const remark = dns ? 'DNS' : '';
+    const _oids = o.objectid != null ? [o.objectid] : undefined;
     if (code === 'PIPE') {
       const m = parseFloat(E.Length || '0') * FT_TO_M;
-      if (m > 0) out.push({ id: rid(), line, code, sub: '', s1, s2: 0, qty: m, unit: 'M', remark, scope });
+      if (m > 0) out.push({ id: rid(), line, code, sub: '', s1, s2: 0, qty: m, unit: 'M', remark, scope, _oids });
     } else {
-      out.push({ id: rid(), line, code, sub: '', s1, s2, qty: 1, unit: 'EA', remark, scope });
+      out.push({ id: rid(), line, code, sub: '', s1, s2, qty: 1, unit: 'EA', remark, scope, _oids });
     }
   }
   return used;
@@ -134,7 +142,7 @@ function insertCode(nm: string): { code: string; s1mm: number | null } | null {
 const srcStem = (s: string) => s.replace(/\.dwg$/i, '').trim() || '?';
 
 function extractP3dDwg(
-  col: ApsObject[], out: MtoRow[], fasteners: { gaskets: number; boltSets: number; stubEnds: number },
+  col: ApsObject[], out: RawRow[], fasteners: { gaskets: number; boltSets: number; stubEnds: number },
   rules: CalibrationRules,
 ): number {
   let used = 0;
@@ -158,17 +166,18 @@ function extractP3dDwg(
       const s1 = s1mm != null ? dnToNps(s1mm) : null;
       const s2 = s2mm ? (dnToNps(s2mm) ?? 0) : 0;
       const spec = String(AC.Spec ?? '');
+      const _oids = o.objectid != null ? [o.objectid] : undefined;
       if (code === 'PIPE') {
         const m = (parseFloat(AC.Length ?? '0') || 0) / 1000;
-        if (m > 0) out.push({ id: rid(), line, code, sub: '', s1, s2: 0, qty: m, unit: 'M', remark: spec, scope: 'MAIN' });
+        if (m > 0) out.push({ id: rid(), line, code, sub: '', s1, s2: 0, qty: m, unit: 'M', remark: spec, scope: 'MAIN', _oids });
       } else if (code === 'WELD NECK FLANGE' && rules.collarOneToOne) {
         // müşteri pratiği (kalibrasyonla öğrenilir): spec WN flanş yerine
         // gevşek backing flanş + kaynaklı collar çifti teklif edilir
-        out.push({ id: rid(), line, code: 'BACKING FLANGE', sub: 'WN→BF', s1, s2: 0, qty: 1, unit: 'EA', remark: spec, scope: 'MAIN' });
-        out.push({ id: rid(), line, code: 'COLLAR', sub: '1:1', s1, s2: 0, qty: 1, unit: 'EA', remark: spec, scope: 'MAIN' });
+        out.push({ id: rid(), line, code: 'BACKING FLANGE', sub: 'WN→BF', s1, s2: 0, qty: 1, unit: 'EA', remark: spec, scope: 'MAIN', _oids });
+        out.push({ id: rid(), line, code: 'COLLAR', sub: '1:1', s1, s2: 0, qty: 1, unit: 'EA', remark: spec, scope: 'MAIN', _oids });
       } else {
         const keepS2 = code === 'CON RED' || code === 'ECC RED' || code === 'RED TEE';
-        out.push({ id: rid(), line, code, sub: '', s1, s2: keepS2 ? s2 : 0, qty: 1, unit: 'EA', remark: spec, scope: 'MAIN' });
+        out.push({ id: rid(), line, code, sub: '', s1, s2: keepS2 ? s2 : 0, qty: 1, unit: 'EA', remark: spec, scope: 'MAIN', _oids });
       }
     } else if (t === 'ACPPCONNECTOR') {
       for (const fk of ['Fastener1', 'Fastener2', 'Fastener3']) {
@@ -177,12 +186,13 @@ function extractP3dDwg(
         used++;
         const szMm = parseFloat(AC[`${fk}_Size`] ?? '') || null;
         const s1 = szMm != null ? dnToNps(szMm) : null;
+        const _oids = o.objectid != null ? [o.objectid] : undefined;
         if (cn === 'Gasket') {
           fasteners.gaskets++;
-          out.push({ id: rid(), line, code: 'GASKET', sub: '', s1, s2: 0, qty: 1, unit: 'EA', remark: 'bağlantı başına 1', scope: fastenerScope });
+          out.push({ id: rid(), line, code: 'GASKET', sub: '', s1, s2: 0, qty: 1, unit: 'EA', remark: 'bağlantı başına 1', scope: fastenerScope, _oids });
         } else {
           fasteners.boltSets++;
-          out.push({ id: rid(), line, code: 'BOLT SET', sub: '', s1, s2: 0, qty: 1, unit: 'EA', remark: '', scope: fastenerScope });
+          out.push({ id: rid(), line, code: 'BOLT SET', sub: '', s1, s2: 0, qty: 1, unit: 'EA', remark: '', scope: fastenerScope, _oids });
         }
       }
     } else if (t === 'Insert') {
@@ -193,6 +203,7 @@ function extractP3dDwg(
         id: rid(), line, code: r.code, sub: String(o.name ?? '').slice(0, 60),
         s1: r.s1mm != null ? dnToNps(r.s1mm) : null, s2: 0, qty: 1, unit: 'EA',
         remark: 'vendor blok', scope: 'MAIN',
+        _oids: o.objectid != null ? [o.objectid] : undefined,
       });
     }
   }
@@ -200,9 +211,9 @@ function extractP3dDwg(
 }
 
 // ---- satır-düzeyi kural uygulaması (vocab.applyRules.push ile aynı semantik) ----
-function applyRowRules(rowsIn: MtoRow[], rules: CalibrationRules): MtoRow[] {
+function applyRowRules(rowsIn: RawRow[], rules: CalibrationRules): RawRow[] {
   const excl = new Set(rules.excludeLines ?? []);
-  const agg = new Map<string, MtoRow>();
+  const agg = new Map<string, RawRow>();
   for (const r0 of rowsIn) {
     let { code, s1, s2, unit, scope } = r0;
     code = rules.codeRenames[code] ?? code;
@@ -236,6 +247,10 @@ function applyRowRules(rowsIn: MtoRow[], rules: CalibrationRules): MtoRow[] {
       if (remark && ex.remark.length < 160 && !ex.remark.includes(remark)) {
         ex.remark = [ex.remark, remark].filter(Boolean).join('; ');
       }
+      // viewer id'leri birleşir (satır başına tavanlı — bölgeyi göstermek yeter)
+      if (r0._oids?.length && (ex._oids?.length ?? 0) < MAX_OIDS_PER_ROW) {
+        ex._oids = [...(ex._oids ?? []), ...r0._oids].slice(0, MAX_OIDS_PER_ROW);
+      }
     } else {
       agg.set(key, { ...r0, code, s1, s2, unit, scope, qty, remark });
     }
@@ -253,12 +268,18 @@ function applyRowRules(rowsIn: MtoRow[], rules: CalibrationRules): MtoRow[] {
 export function extractFromApsProps(collection: unknown[], rules: CalibrationRules): ApsExtractResult {
   const col = collection as ApsObject[];
   const fasteners = { gaskets: 0, boltSets: 0, stubEnds: 0 };
-  const raw: MtoRow[] = [];
+  const raw: RawRow[] = [];
   const revitUsed = extractRevit(col, raw);
   // conta/cıvata satırları boyutLU olarak extractP3dDwg içinde üretilir
   // (includeFasteners kapalıysa INFO kapsamında — çift sayım yok)
   const p3dUsed = extractP3dDwg(col, raw, fasteners, rules);
-  const rows = applyRowRules(raw, rules);
+  const withOids = applyRowRules(raw, rules);
+  // viewer eşlemesi ayrılır, satırlar temiz MtoRow olarak döner (DB'ye _oids sızmaz)
+  const objectMap: Record<string, number[]> = {};
+  const rows: MtoRow[] = withOids.map(({ _oids, ...row }) => {
+    if (_oids?.length) objectMap[row.id] = _oids;
+    return row;
+  });
   const totals = computeTotals(rows, []);
   const family: ApsExtractResult['family'] =
     revitUsed && p3dUsed ? 'mixed' : revitUsed ? 'revit' : p3dUsed ? 'plant3d-dwg' : 'none';
@@ -267,5 +288,6 @@ export function extractFromApsProps(collection: unknown[], rules: CalibrationRul
     structuredCount: revitUsed + p3dUsed,
     totalCount: col.length,
     lineCount: totals.lines.length,
+    objectMap,
   };
 }

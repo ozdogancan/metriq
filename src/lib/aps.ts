@@ -38,6 +38,27 @@ async function authed(path: string, init: RequestInit = {}): Promise<Response> {
   });
 }
 
+// Viewer için DAR kapsamlı token (yalnız viewables:read) — istemciye bu verilir,
+// bucket/translate yetkisi taşımaz. Ayrı cache: ana token'la kapsam karışmasın.
+let cachedViewerToken: { value: string; exp: number } | null = null;
+export async function viewerToken(): Promise<{ access_token: string; expires_in: number }> {
+  if (cachedViewerToken && Date.now() < cachedViewerToken.exp - 120_000) {
+    return { access_token: cachedViewerToken.value, expires_in: Math.floor((cachedViewerToken.exp - Date.now()) / 1000) };
+  }
+  const r = await fetch(`${BASE}/authentication/v2/token`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+      authorization: 'Basic ' + Buffer.from(`${ID}:${SECRET}`).toString('base64'),
+    },
+    body: new URLSearchParams({ grant_type: 'client_credentials', scope: 'viewables:read' }),
+  });
+  const d = await r.json();
+  if (!d.access_token) throw new Error('APS viewer token alınamadı');
+  cachedViewerToken = { value: d.access_token, exp: Date.now() + (d.expires_in ?? 3600) * 1000 };
+  return { access_token: d.access_token, expires_in: d.expires_in ?? 3600 };
+}
+
 export function toUrn(objectId: string): string {
   return Buffer.from(objectId).toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
 }

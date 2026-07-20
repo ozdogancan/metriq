@@ -11,6 +11,7 @@ import {
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { t, type Lang } from '@/lib/i18n';
 import type { AnswerDiff, AnswerDiffRow, AnswerRowStatus, Calibration, MtoRow, Run, SteelRow } from '@/lib/types';
+import { ModelViewerPanel } from '@/components/model-viewer';
 import { MAX_ANSWER_XLSX_BYTES } from '@/lib/upload-policy';
 
 type Tab = 'rows' | 'steel';
@@ -20,6 +21,7 @@ interface MtoTableMeta {
   lang: Lang;
   onEdit: (id: string, patch: Partial<MtoRow>) => void;
   onRemove: (id: string) => void;
+  onView?: (row: MtoRow) => void; // "modelde göster" — yalnız bulut (APS) metrajlarında
 }
 
 // Sayısal hücre: teklif-kritik giriş. Taslak string state + blur/Enter'da commit —
@@ -70,8 +72,28 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
   const [answerBusy, setAnswerBusy] = useState(false);
   const [freshAnswerId, setFreshAnswerId] = useState<string | null>(null); // bu oturumda yüklenen karşılaştırma → panele kaydır
   const answerFileRef = useRef<HTMLInputElement>(null);
+  // "modelde göster" — yalnız bulut (APS) metrajlarında; null = panel kapalı
+  const [viewerFocus, setViewerFocus] = useState<{ rowIds: string[]; label: string } | null>(null);
+  const canView = Boolean(run.aps?.urn);
+  const openViewer = (row: MtoRow) => setViewerFocus({
+    rowIds: [row.id],
+    label: `${row.code} ${row.s1 ?? '?'}${row.s2 ? `x${row.s2}` : ''}″ · ${row.line} · ${row.qty}${row.unit}`,
+  });
 
   const tr = lang === 'tr';
+
+  // geri bildirim uygulandıktan sonra: satırları/karneyi sunucudan tazele
+  async function refetchRun() {
+    try {
+      const r = await fetch(`/api/runs/${run.id}`, { cache: 'no-store' });
+      if (!r.ok) return;
+      const d = await r.json();
+      if (Array.isArray(d.rows)) setRows(d.rows);
+      setAnswer(d.run?.answer ?? null);
+      setDirty(false);
+      router.refresh();
+    } catch { /* sıradaki etkileşimde toparlanır */ }
+  }
 
   // kaydedilmemiş düzenlemeler sekme kapanışında kaybolmasın
   useEffect(() => {
@@ -354,6 +376,7 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
       ) : (
         <MtoTable
           lang={lang} rows={visible} onEdit={edit} onRemove={removeRow}
+          onView={canView ? openViewer : undefined}
           emptyMsg={q || lineFilter
             ? (tr ? 'Filtreye uyan satır yok.' : 'No rows match the filter.')
             : (tr ? 'Bu sekmede satır yok.' : 'No rows in this tab.')}
@@ -387,6 +410,164 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
               : 'Learns from manual code/line edits in the table; to learn from an answer Excel, upload one above.')}
         </span>
       </div>
+
+      {/* sonuç geri bildirimi → öğrenme döngüsü */}
+      <FeedbackPanel lang={lang} runId={run.id} onApplied={refetchRun} />
+
+      {/* 3B model paneli */}
+      {viewerFocus && canView && (
+        <ModelViewerPanel lang={lang} runId={run.id}
+          focusRowIds={viewerFocus.rowIds} focusLabel={viewerFocus.label}
+          onClose={() => setViewerFocus(null)} />
+      )}
+    </div>
+  );
+}
+
+// ---- geri bildirim paneli: serbest metin → AI kural çevirisi → kapsam seçimi → yeniden uygula ----
+function FeedbackPanel({ lang, runId, onApplied }: {
+  lang: Lang; runId: string; onApplied: () => void;
+}) {
+  const tr = lang === 'tr';
+  const [text, setText] = useState('');
+  const [step, setStep] = useState<'write' | 'scope'>('write');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{
+    applied: boolean; summary: string; unmappable?: string; profile?: string | null;
+    changes?: { renamed: number; excludedLines: number; corrections: number; changedRows: number };
+  } | null>(null);
+
+  async function submit(scope: 'file' | 'global') {
+    setBusy(true);
+    setResult(null);
+    try {
+      const r = await fetch(`/api/runs/${runId}/feedback`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text: text.trim(), scope }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+      setResult({
+        applied: Boolean(d.applied),
+        summary: tr ? d.summaryTr : (d.summaryEn ?? d.summaryTr),
+        unmappable: d.unmappable || undefined,
+        profile: d.profile ?? null,
+        changes: d.changes,
+      });
+      if (d.applied) {
+        toast.success(tr
+          ? `Geri bildirim uygulandı — ${d.changes.changedRows} satır güncellendi`
+          : `Feedback applied — ${d.changes.changedRows} rows updated`);
+        setText('');
+        setStep('write');
+        onApplied();
+      }
+    } catch (e) {
+      toast.error((tr ? 'Geri bildirim uygulanamadı: ' : 'Feedback failed: ') + (e instanceof Error ? e.message : ''));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="rise rise-4 panel panel-corners px-5 py-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="text-[12px] font-semibold uppercase tracking-wider text-copper">
+          💬 {tr ? 'Sonuç hakkında geri bildirim' : 'Feedback on this result'}
+        </span>
+        <span className="font-data text-[10.5px] text-muted">
+          {tr
+            ? 'Serbestçe yaz — sistem kurala çevirir, uygular ve istersen sonraki dosyalar için öğrenir.'
+            : 'Write freely — the system turns it into rules, applies them, and can learn for future files.'}
+        </span>
+      </div>
+
+      <textarea value={text} onChange={e => { setText(e.target.value); if (step === 'scope') setStep('write'); }}
+        rows={3} maxLength={2000}
+        placeholder={tr
+          ? 'Örn: "GR-166-3DM-014 hattı mevcut tesisat, kapsam dışı olsun" · "BSP FITTING yerine THREADED FITTING yazılsın" · "6″ CAP kalemi bilgi bölümüne insin"'
+          : 'E.g. "Line GR-166-3DM-014 is existing plant, take it out of scope" · "Rename BSP FITTING to THREADED FITTING"'}
+        className="panel mt-3 w-full resize-y px-3.5 py-2.5 font-data text-[12.5px] outline-none focus:border-copper/60" />
+
+      {step === 'write' && (
+        <div className="mt-2 flex items-center gap-3">
+          <button onClick={() => setStep('scope')} disabled={busy || text.trim().length < 5} className="btn !text-[12px]">
+            {tr ? 'Yorumla ve uygula →' : 'Interpret & apply →'}
+          </button>
+          <span className="font-data text-[10px] text-muted">
+            {tr ? 'Rakamlar uydurulmaz: yalnız kod/kapsam kuralları türetilir.' : 'No invented numbers: only code/scope rules are derived.'}
+          </span>
+        </div>
+      )}
+
+      {/* kapsam sorusu: bu dosyaya özel mi, kalıcı öğrenme mi? */}
+      {step === 'scope' && (
+        <div className="mt-3">
+          <p className="font-data text-[11.5px] text-muted">
+            {tr ? 'Bu geri bildirim nerede geçerli olsun?' : 'Where should this feedback apply?'}
+          </p>
+          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            <button onClick={() => submit('file')} disabled={busy}
+              className="btn !h-auto !items-start !px-4 !py-3 text-left">
+              <span className="block">
+                <span className="block text-[13px] font-semibold">📄 {tr ? 'Yalnız bu dosya' : 'Only this file'}</span>
+                <span className="mt-1 block font-data text-[10.5px] text-muted">
+                  {tr ? 'Kurallar bu metraja uygulanır; profil değişmez.' : 'Rules apply to this take-off; the profile is untouched.'}
+                </span>
+              </span>
+            </button>
+            <button onClick={() => submit('global')} disabled={busy}
+              className="btn btn-primary !h-auto !items-start !px-4 !py-3 text-left">
+              <span className="block">
+                <span className="block text-[13px] font-semibold">🌐 {tr ? 'Tüm dosyalarda öğren' : 'Learn for all files'}</span>
+                <span className="mt-1 block font-data text-[10.5px] opacity-85">
+                  {tr ? 'Bu metraja uygulanır + profile işlenir; sonraki dosyalar otomatik faydalanır.' : 'Applies here + folds into the profile; future files benefit automatically.'}
+                </span>
+              </span>
+            </button>
+          </div>
+          {busy && (
+            <p className="mt-2 font-data text-[11px] text-copper-bright">
+              {tr ? 'Geri bildirim yorumlanıyor ve uygulanıyor…' : 'Interpreting and applying feedback…'}
+            </p>
+          )}
+        </div>
+      )}
+
+      {result && (
+        <div className="mt-3 rounded border px-3.5 py-2.5 font-data text-[11.5px]"
+          style={result.applied ? {
+            borderColor: 'color-mix(in oklab, var(--color-mint) 35%, transparent)',
+            background: 'color-mix(in oklab, var(--color-mint) 8%, transparent)',
+          } : {
+            borderColor: 'color-mix(in oklab, var(--color-copper) 40%, transparent)',
+            background: 'color-mix(in oklab, var(--color-copper) 7%, transparent)',
+          }}>
+          {result.applied ? (
+            <>
+              ✓ {result.summary}
+              {result.changes && (
+                <span className="text-muted">
+                  {' — '}{result.changes.changedRows} {tr ? 'satır güncellendi' : 'rows updated'}
+                  {result.changes.excludedLines > 0 && ` · ${result.changes.excludedLines} ${tr ? 'hat kapsam dışı' : 'lines excluded'}`}
+                  {result.changes.renamed > 0 && ` · ${result.changes.renamed} ${tr ? 'kod çevrildi' : 'codes renamed'}`}
+                </span>
+              )}
+              {result.profile && (
+                <span className="text-mint"> · {tr ? 'profil öğrendi' : 'profile learned'}: {result.profile}</span>
+              )}
+              {result.unmappable && (
+                <div className="mt-1 text-muted">⚠ {tr ? 'Kurala çevrilemeyen kısım' : 'Not mappable'}: {result.unmappable}</div>
+              )}
+            </>
+          ) : (
+            <>
+              ⚠ {tr ? 'Bu geri bildirimden uygulanabilir kural çıkaramadım.' : 'I could not derive an applicable rule from this feedback.'}
+              {result.unmappable && <div className="mt-1 text-muted">{result.unmappable}</div>}
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -479,8 +660,15 @@ const MTO_COLUMNS = [
       const m = meta(ctx.table); const r = ctx.row.original;
       const tr = m.lang === 'tr';
       return (
-        <button onClick={() => m.onRemove(r.id)} aria-label={tr ? `satırı sil: ${r.code}` : `delete row: ${r.code}`}
-          className="text-muted transition-colors hover:text-danger" title={tr ? 'Satırı sil' : 'Delete row'}>×</button>
+        <span className="flex items-center gap-2">
+          {m.onView && (
+            <button onClick={() => m.onView!(r)} aria-label={tr ? `modelde göster: ${r.code}` : `show in model: ${r.code}`}
+              className="text-muted transition-colors hover:text-copper-bright"
+              title={tr ? 'Modelde göster — bu satırın nesnelerine zoom' : 'Show in model — zoom to this row\'s objects'}>◎</button>
+          )}
+          <button onClick={() => m.onRemove(r.id)} aria-label={tr ? `satırı sil: ${r.code}` : `delete row: ${r.code}`}
+            className="text-muted transition-colors hover:text-danger" title={tr ? 'Satırı sil' : 'Delete row'}>×</button>
+        </span>
       );
     },
   }),
@@ -494,10 +682,11 @@ const TD_CLASS: Record<string, string> = {
 };
 const TH_RIGHT = new Set(['s1', 's2', 'qty']);
 
-function MtoTable({ lang, rows, onEdit, onRemove, emptyMsg }: {
+function MtoTable({ lang, rows, onEdit, onRemove, onView, emptyMsg }: {
   lang: Lang; rows: MtoRow[]; emptyMsg: string;
   onEdit: (id: string, patch: Partial<MtoRow>) => void;
   onRemove: (id: string) => void;
+  onView?: (row: MtoRow) => void;
 }) {
   const [sorting, setSorting] = useState<SortingState>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -510,7 +699,7 @@ function MtoTable({ lang, rows, onEdit, onRemove, emptyMsg }: {
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getRowId: r => r.id,
-    meta: { lang, onEdit, onRemove } satisfies MtoTableMeta,
+    meta: { lang, onEdit, onRemove, onView } satisfies MtoTableMeta,
   });
   const tableRows = table.getRowModel().rows;
 

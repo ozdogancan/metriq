@@ -147,3 +147,131 @@ ${compact}
     return null;
   }
 }
+
+// ---------- Geri bildirim yorumlama ----------
+// Serbest metin geri bildirimi MEVCUT kural sözlüğüne çevirir (codeRenames /
+// excludeLines / itemCorrections). Rakam uydurma yetkisi YOK: miktar değişikliği,
+// satır ekleme, çarpan gibi istekler 'unmappable' olarak dürüstçe geri döner.
+export interface FeedbackActions {
+  codeRenames: Array<{ from: string; to: string }>;
+  excludeLines: string[];
+  itemCorrections: Array<{
+    match: { code: string; s1: number | null; s2: number; unit: 'M' | 'EA'; line?: string; sub?: string };
+    set: { code?: string; s1?: number | null; s2?: number; unit?: 'M' | 'EA'; scope?: 'MAIN' | 'INFO' };
+  }>;
+}
+export interface FeedbackInterpretation {
+  actions: FeedbackActions;
+  unmappable: string;   // kurala çevrilemeyen kısım — boşsa hepsi eşlendi
+  summaryTr: string;
+  summaryEn: string;
+}
+
+const FEEDBACK_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    actions: {
+      type: 'object' as const,
+      properties: {
+        codeRenames: {
+          type: 'array' as const,
+          items: {
+            type: 'object' as const,
+            properties: { from: { type: 'string' as const }, to: { type: 'string' as const } },
+            required: ['from', 'to'], additionalProperties: false,
+          },
+        },
+        excludeLines: { type: 'array' as const, items: { type: 'string' as const } },
+        itemCorrections: {
+          type: 'array' as const,
+          items: {
+            type: 'object' as const,
+            properties: {
+              match: {
+                type: 'object' as const,
+                properties: {
+                  code: { type: 'string' as const },
+                  s1: { type: ['number', 'null'] as const },
+                  s2: { type: 'number' as const },
+                  unit: { type: 'string' as const, enum: ['M', 'EA'] },
+                  line: { type: 'string' as const },
+                  sub: { type: 'string' as const },
+                },
+                required: ['code', 's1', 's2', 'unit'], additionalProperties: false,
+              },
+              set: {
+                type: 'object' as const,
+                properties: {
+                  code: { type: 'string' as const },
+                  s1: { type: ['number', 'null'] as const },
+                  s2: { type: 'number' as const },
+                  unit: { type: 'string' as const, enum: ['M', 'EA'] },
+                  scope: { type: 'string' as const, enum: ['MAIN', 'INFO'] },
+                },
+                additionalProperties: false,
+              },
+            },
+            required: ['match', 'set'], additionalProperties: false,
+          },
+        },
+      },
+      required: ['codeRenames', 'excludeLines', 'itemCorrections'],
+      additionalProperties: false,
+    },
+    unmappable: { type: 'string' as const },
+    summaryTr: { type: 'string' as const },
+    summaryEn: { type: 'string' as const },
+  },
+  required: ['actions', 'unmappable', 'summaryTr', 'summaryEn'],
+  additionalProperties: false,
+};
+
+export async function interpretFeedback(args: {
+  text: string;
+  rows: MtoRow[];
+  vocab: string;
+}): Promise<FeedbackInterpretation | null> {
+  if (!aiEnabled) return null;
+  const { text, rows, vocab } = args;
+  const lines = [...new Set(rows.map(r => r.line).filter(l => l && l !== '?' && l !== '*'))].sort();
+  const codes = [...new Set(rows.map(r => r.code))].sort();
+  const compact = rows.filter(r => r.scope === 'MAIN').slice(0, 400).map(r =>
+    `${r.line}|${r.code}${r.sub ? '/' + r.sub : ''}|${r.s1 ?? '?'}x${r.s2 || 0}|${r.qty}${r.unit}`).join('\n');
+
+  const prompt = `Sen Metriq metraj platformunun kural çevirmenisin. Kullanıcı, metraj sonucuna serbest metinle geri bildirim verdi. Görevin bu geri bildirimi platformun MEVCUT kural sözlüğüne çevirmek — başka hiçbir şey.
+
+KURAL SÖZLÜĞÜ (yalnız bunlar):
+1) codeRenames: bir kodu başka koda çevir (ör. "CAP yerine KEP yazılsın" → {from:"CAP",to:"KEP"}).
+2) excludeLines: bir hattı kapsam dışına al (satırlar silinmez, bilgi bölümüne iner). Hat adları AŞAĞIDAKİ listeden birebir seçilmeli.
+3) itemCorrections: TAM imza eşleşen kalemi düzelt (match: code+s1+s2+unit[+line]) → set: code/s1/s2/unit/scope değişebilir. scope:"INFO" = kapsam dışına al, "MAIN" = kapsama geri al.
+
+YETKİN OLMAYANLAR (bunları actions'a KOYMA, 'unmappable' alanında açıkla):
+- Miktar değiştirme/uydurma, yeni satır ekleme, çarpan/faktör, "daha doğru ölç" gibi genel istekler.
+- Listede olmayan hat/kod adları (tahmin etme).
+
+Tesisat profili: ${vocab}
+MEVCUT HATLAR: ${lines.join(' · ') || '(yok)'}
+MEVCUT KODLAR: ${codes.join(' · ')}
+SATIRLAR (hat|kod|çap|miktar — ilk 400):
+${compact}
+
+KULLANICI GERİ BİLDİRİMİ:
+"""${text.slice(0, 2000)}"""
+
+Kurallar: SADECE geri bildirimde açıkça istenen değişiklikleri çıkar; emin olmadığını unmappable'a yaz. summaryTr/summaryEn: yapılacak değişikliklerin 1-2 cümlelik özeti (iki dil aynı içerik). Hiçbir eylem çıkmıyorsa boş diziler + unmappable'da nedenini ve İŞE YARAYAN örnek geri bildirim biçimlerini yaz.`;
+
+  try {
+    const res = await client().messages.create({
+      model: 'claude-sonnet-5',
+      max_tokens: 4000,
+      messages: [{ role: 'user', content: prompt }],
+      output_config: { format: { type: 'json_schema', schema: FEEDBACK_SCHEMA } },
+    });
+    const textBlock = res.content.find(b => b.type === 'text');
+    if (!textBlock || textBlock.type !== 'text') return null;
+    return JSON.parse(textBlock.text) as FeedbackInterpretation;
+  } catch (e) {
+    console.error('geri bildirim yorumlama hatası (fail-soft):', e);
+    return null;
+  }
+}

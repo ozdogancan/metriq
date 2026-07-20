@@ -563,6 +563,45 @@ export async function drainStorageCleanup(limit = 5): Promise<void> {
   }
 }
 
+// ---- Run artefaktları (ör. 3B viewer satır→nesne eşlemesi) ----
+// runs.aps jsonb'sine KOYULMAZ: ENQ-223 ölçeğinde ~45k id ≈ 300KB olur ve her
+// slim-poll / liste sorgusunu şişirirdi. Depo katmanında ayrı nesne olarak durur.
+const ARTIFACT_NAMES = new Set(['objectmap.json']);
+
+export async function putRunArtifact(runId: string, name: string, data: unknown): Promise<void> {
+  if (!isUuid(runId) || !ARTIFACT_NAMES.has(name)) throw new Error('unsafe artifact key');
+  const buf = Buffer.from(JSON.stringify(data), 'utf8');
+  if (isSupabase) {
+    // bucket MIME-kısıtlı (NWD yüklemeleri için octet-stream'e izinli) — json reddedilir
+    const { error } = await client().storage.from(BUCKET).upload(`${runId}/${name}`, buf, { upsert: true, contentType: 'application/octet-stream' });
+    if (error) throw error;
+    return;
+  }
+  if (isPg) { await pgPutFile(`${runId}/${name}`, buf); return; }
+  const dir = path.join(DATA_DIR, 'files', runId);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, name), buf);
+}
+
+export async function getRunArtifact<T>(runId: string, name: string): Promise<T | null> {
+  if (!isUuid(runId) || !ARTIFACT_NAMES.has(name)) throw new Error('unsafe artifact key');
+  try {
+    let buf: Buffer;
+    if (isSupabase) {
+      const { data, error } = await client().storage.from(BUCKET).download(`${runId}/${name}`);
+      if (error || !data) return null;
+      buf = Buffer.from(await data.arrayBuffer());
+    } else if (isPg) {
+      buf = await pgGetFile(`${runId}/${name}`);
+    } else {
+      buf = await fs.readFile(path.join(DATA_DIR, 'files', runId, name));
+    }
+    return JSON.parse(buf.toString('utf8')) as T;
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchStoredFile(key: string): Promise<Buffer> {
   if (!isSafeStorageKey(key)) throw new Error('unsafe storage key');
   if (isSupabase) {
