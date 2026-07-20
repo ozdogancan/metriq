@@ -268,12 +268,20 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
             </button>
           )}
           {saving === 'saved' && <span className="chip"><span className="chip-dot bg-mint" />{t(lang, 'saved')}</span>}
-          {canView && (
+          {canView ? (
             <button onClick={() => setViewerFocus({ rowIds: [], label: tr ? 'Tüm model' : 'Whole model' })}
               className="btn"
               title={tr ? '3B modeli aç — satır ikonları (◎) o satırın parçalarına zoom yapar' : 'Open the 3D model — row icons (◎) zoom to that row\'s parts'}>
               ◎ {tr ? '3B Model' : '3D Model'}
             </button>
+          ) : run.status === 'done' && (
+            // sessiz yokluk "bug" gibi okunuyor — nedenini söyle
+            <span className="chip cursor-help text-muted"
+              title={tr
+                ? 'Bu dosya yerel motorla işlendi (Autodesk çevirisi gerekmedi) — 3B görüntüleme yalnız bulutta çevrilen dosyalarda (Revit / karışık CAD) mevcut.'
+                : 'This file was processed by the local engine (no Autodesk translation needed) — 3D viewing is available only for cloud-translated files (Revit / mixed CAD).'}>
+              ◎ {tr ? '3B: bu dosyada yok' : '3D: n/a for this file'}
+            </span>
           )}
           <button onClick={() => answerFileRef.current?.click()} disabled={answerBusy} className="btn"
             title={tr ? 'Müşterinin cevap Excel\'ini yükle — sonuçla karşılaştırılır' : 'Upload the client\'s answer Excel — compared against the result'}>
