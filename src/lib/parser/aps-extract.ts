@@ -135,8 +135,12 @@ const srcStem = (s: string) => s.replace(/\.dwg$/i, '').trim() || '?';
 
 function extractP3dDwg(
   col: ApsObject[], out: MtoRow[], fasteners: { gaskets: number; boltSets: number; stubEnds: number },
+  rules: CalibrationRules,
 ): number {
   let used = 0;
+  // conta/cıvata: boyutLU satır olarak da çıkar (cevap şablonları boyut bazında sayar);
+  // includeFasteners kapalıysa INFO'da dursun — veri kaybolmasın, kalibrasyonla MAIN'e alınabilsin
+  const fastenerScope = rules.includeFasteners ? 'MAIN' as const : 'INFO' as const;
   for (const o of col) {
     const P = o.properties ?? {}, I = P.Item ?? {}, AC = P.AutoCAD ?? {};
     const t = I.Type;
@@ -157,6 +161,11 @@ function extractP3dDwg(
       if (code === 'PIPE') {
         const m = (parseFloat(AC.Length ?? '0') || 0) / 1000;
         if (m > 0) out.push({ id: rid(), line, code, sub: '', s1, s2: 0, qty: m, unit: 'M', remark: spec, scope: 'MAIN' });
+      } else if (code === 'WELD NECK FLANGE' && rules.collarOneToOne) {
+        // müşteri pratiği (kalibrasyonla öğrenilir): spec WN flanş yerine
+        // gevşek backing flanş + kaynaklı collar çifti teklif edilir
+        out.push({ id: rid(), line, code: 'BACKING FLANGE', sub: 'WN→BF', s1, s2: 0, qty: 1, unit: 'EA', remark: spec, scope: 'MAIN' });
+        out.push({ id: rid(), line, code: 'COLLAR', sub: '1:1', s1, s2: 0, qty: 1, unit: 'EA', remark: spec, scope: 'MAIN' });
       } else {
         const keepS2 = code === 'CON RED' || code === 'ECC RED' || code === 'RED TEE';
         out.push({ id: rid(), line, code, sub: '', s1, s2: keepS2 ? s2 : 0, qty: 1, unit: 'EA', remark: spec, scope: 'MAIN' });
@@ -164,8 +173,17 @@ function extractP3dDwg(
     } else if (t === 'ACPPCONNECTOR') {
       for (const fk of ['Fastener1', 'Fastener2', 'Fastener3']) {
         const cn = String(AC[`${fk}_Class Name`] ?? '');
-        if (cn === 'Gasket') { fasteners.gaskets++; used++; }
-        else if (cn === 'BoltSet') { fasteners.boltSets++; used++; }
+        if (cn !== 'Gasket' && cn !== 'BoltSet') continue;
+        used++;
+        const szMm = parseFloat(AC[`${fk}_Size`] ?? '') || null;
+        const s1 = szMm != null ? dnToNps(szMm) : null;
+        if (cn === 'Gasket') {
+          fasteners.gaskets++;
+          out.push({ id: rid(), line, code: 'GASKET', sub: '', s1, s2: 0, qty: 1, unit: 'EA', remark: 'bağlantı başına 1', scope: fastenerScope });
+        } else {
+          fasteners.boltSets++;
+          out.push({ id: rid(), line, code: 'BOLT SET', sub: '', s1, s2: 0, qty: 1, unit: 'EA', remark: '', scope: fastenerScope });
+        }
       }
     } else if (t === 'Insert') {
       const r = insertCode(String(o.name ?? ''));
@@ -233,11 +251,9 @@ export function extractFromApsProps(collection: unknown[], rules: CalibrationRul
   const fasteners = { gaskets: 0, boltSets: 0, stubEnds: 0 };
   const raw: MtoRow[] = [];
   const revitUsed = extractRevit(col, raw);
-  const p3dUsed = extractP3dDwg(col, raw, fasteners);
-  if (rules.includeFasteners) {
-    if (fasteners.gaskets) raw.push({ id: rid(), line: '*', code: 'GASKET', sub: '', s1: null, s2: 0, qty: fasteners.gaskets, unit: 'EA', remark: 'bağlantı başına 1', scope: 'MAIN' });
-    if (fasteners.boltSets) raw.push({ id: rid(), line: '*', code: 'BOLT SET', sub: '', s1: null, s2: 0, qty: fasteners.boltSets, unit: 'EA', remark: '', scope: 'MAIN' });
-  }
+  // conta/cıvata satırları boyutLU olarak extractP3dDwg içinde üretilir
+  // (includeFasteners kapalıysa INFO kapsamında — çift sayım yok)
+  const p3dUsed = extractP3dDwg(col, raw, fasteners, rules);
   const rows = applyRowRules(raw, rules);
   const totals = computeTotals(rows, []);
   const family: ApsExtractResult['family'] =
