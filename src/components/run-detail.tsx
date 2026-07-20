@@ -268,6 +268,13 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
             </button>
           )}
           {saving === 'saved' && <span className="chip"><span className="chip-dot bg-mint" />{t(lang, 'saved')}</span>}
+          {canView && (
+            <button onClick={() => setViewerFocus({ rowIds: [], label: tr ? 'Tüm model' : 'Whole model' })}
+              className="btn"
+              title={tr ? '3B modeli aç — satır ikonları (◎) o satırın parçalarına zoom yapar' : 'Open the 3D model — row icons (◎) zoom to that row\'s parts'}>
+              ◎ {tr ? '3B Model' : '3D Model'}
+            </button>
+          )}
           <button onClick={() => answerFileRef.current?.click()} disabled={answerBusy} className="btn"
             title={tr ? 'Müşterinin cevap Excel\'ini yükle — sonuçla karşılaştırılır' : 'Upload the client\'s answer Excel — compared against the result'}>
             {answerBusy ? (tr ? 'Karşılaştırılıyor…' : 'Comparing…') : (tr ? '⇪ Cevapla karşılaştır' : '⇪ Compare with answer')}
@@ -284,6 +291,7 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
       {answer && (
         <AnswerPanel lang={lang} run={run} answer={answer} calibrations={calibrations} dirty={dirty}
           freshId={freshAnswerId}
+          onView={canView ? (rowIds, label) => setViewerFocus({ rowIds, label }) : undefined}
           onApplied={next => { setAnswer(next); router.refresh(); }} />
       )}
 
@@ -686,11 +694,11 @@ const MTO_COLUMNS = [
       const m = meta(ctx.table); const r = ctx.row.original;
       const tr = m.lang === 'tr';
       return (
-        <span className="flex items-center gap-2">
+        <span className="flex items-center gap-1.5">
           {m.onView && (
             <button onClick={() => m.onView!(r)} aria-label={tr ? `modelde göster: ${r.code}` : `show in model: ${r.code}`}
-              className="text-muted transition-colors hover:text-copper-bright"
-              title={tr ? 'Modelde göster — bu satırın nesnelerine zoom' : 'Show in model — zoom to this row\'s objects'}>◎</button>
+              className="rounded border border-line px-1.5 py-0.5 text-[11px] text-copper transition-colors hover:border-copper/60 hover:text-copper-bright"
+              title={tr ? 'Modelde göster — bu satırın parçalarına zoom' : 'Show in model — zoom to this row\'s parts'}>◎ 3B</button>
           )}
           <button onClick={() => m.onRemove(r.id)} aria-label={tr ? `satırı sil: ${r.code}` : `delete row: ${r.code}`}
             className="text-muted transition-colors hover:text-danger" title={tr ? 'Satırı sil' : 'Delete row'}>×</button>
@@ -824,9 +832,10 @@ function draftFrom(r: AnswerDiffRow): CustomDraft {
   };
 }
 
-function AnswerPanel({ lang, run, answer, calibrations, dirty, freshId, onApplied }: {
+function AnswerPanel({ lang, run, answer, calibrations, dirty, freshId, onApplied, onView }: {
   lang: Lang; run: Run; answer: AnswerDiff; calibrations: Calibration[];
   dirty: boolean; freshId: string | null; onApplied: (next: AnswerDiff) => void;
+  onView?: (rowIds: string[], label: string) => void; // "modelde göster" — bulut run'larında
 }) {
   const tr = lang === 'tr';
   const [showAll, setShowAll] = useState(false);
@@ -1090,7 +1099,16 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, freshId, onApplie
                 return (
                   <Fragment key={r.id ?? i}>
                     <tr>
-                      <td><span className="chip text-[10.5px]" title={tr ? s.tipTr : s.tipEn}><span className="chip-dot" style={{ background: s.color }} />{tr ? s.tr : s.en}</span></td>
+                      <td>
+                        <span className="flex items-center gap-1.5">
+                          <span className="chip text-[10.5px]" title={tr ? s.tipTr : s.tipEn}><span className="chip-dot" style={{ background: s.color }} />{tr ? s.tr : s.en}</span>
+                          {onView && (r.oursSide?.rowIds?.length ?? 0) > 0 && (
+                            <button onClick={() => onView(r.oursSide!.rowIds, `${codeCell} ${sizeCell}`)}
+                              className="rounded border border-line px-1 py-0.5 text-[10px] text-copper transition-colors hover:border-copper/60 hover:text-copper-bright"
+                              title={tr ? 'Modelde göster — bizim saydığımız parçalara zoom' : 'Show in model — zoom to the parts we counted'}>◎</button>
+                          )}
+                        </span>
+                      </td>
                       <td>{codeCell}</td>
                       <td className="num !text-right">{sizeCell}</td>
                       <td className="num !text-right">{r.ours}</td>
