@@ -10,7 +10,7 @@ import {
 } from '@tanstack/react-table';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { t, type Lang } from '@/lib/i18n';
-import type { AnswerDiff, AnswerDiffRow, Calibration, MtoRow, Run, SteelRow } from '@/lib/types';
+import type { AnswerDiff, AnswerDiffRow, AnswerRowStatus, Calibration, MtoRow, Run, SteelRow } from '@/lib/types';
 import { MAX_ANSWER_XLSX_BYTES } from '@/lib/upload-policy';
 
 type Tab = 'rows' | 'steel';
@@ -68,6 +68,7 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
   const [calName, setCalName] = useState('');
   const [answer, setAnswer] = useState<AnswerDiff | null>(run.answer ?? null);
   const [answerBusy, setAnswerBusy] = useState(false);
+  const [freshAnswerId, setFreshAnswerId] = useState<string | null>(null); // bu oturumda yüklenen karşılaştırma → panele kaydır
   const answerFileRef = useRef<HTMLInputElement>(null);
 
   const tr = lang === 'tr';
@@ -147,6 +148,7 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
       const d = await res.json();
       if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
       setAnswer(d.answer);
+      setFreshAnswerId(d.answer?.id ?? null); // panel taze karşılaştırmaya kayar
       toast.success(tr
         ? `Cevap karşılaştırıldı: %${d.answer.accuracy} eşleşme`
         : `Answer compared: ${d.answer.accuracy}% match`);
@@ -247,7 +249,7 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
             title={tr ? 'Müşterinin cevap Excel\'ini yükle — sonuçla karşılaştırılır' : 'Upload the client\'s answer Excel — compared against the result'}>
             {answerBusy ? (tr ? 'Karşılaştırılıyor…' : 'Comparing…') : (tr ? '⇪ Cevapla karşılaştır' : '⇪ Compare with answer')}
           </button>
-          <input ref={answerFileRef} type="file" accept=".xlsx" hidden
+          <input ref={answerFileRef} type="file" accept=".xlsx,.xlsm" hidden
             onChange={e => { const f = e.target.files?.[0]; if (f) uploadAnswer(f); e.target.value = ''; }} />
           <button onClick={downloadExcel} disabled={saving === 'saving'} className="btn btn-primary">
             ⤓ {t(lang, 'download_excel')}{dirty ? ' *' : ''}
@@ -258,6 +260,7 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
       {/* cevap karşılaştırma karnesi + karar tezgâhı */}
       {answer && (
         <AnswerPanel lang={lang} run={run} answer={answer} calibrations={calibrations} dirty={dirty}
+          freshId={freshAnswerId}
           onApplied={next => { setAnswer(next); router.refresh(); }} />
       )}
 
@@ -600,14 +603,24 @@ function draftFrom(r: AnswerDiffRow): CustomDraft {
   };
 }
 
-function AnswerPanel({ lang, run, answer, calibrations, dirty, onApplied }: {
+function AnswerPanel({ lang, run, answer, calibrations, dirty, freshId, onApplied }: {
   lang: Lang; run: Run; answer: AnswerDiff; calibrations: Calibration[];
-  dirty: boolean; onApplied: (next: AnswerDiff) => void;
+  dirty: boolean; freshId: string | null; onApplied: (next: AnswerDiff) => void;
 }) {
   const tr = lang === 'tr';
   const [showAll, setShowAll] = useState(false);
-  const [showMatches, setShowMatches] = useState(false);
+  const [filter, setFilterState] = useState<'diffs' | AnswerRowStatus>('diffs');
   const [busy, setBusy] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const scrolledForRef = useRef<string | null>(null);
+  // bu oturumda yüklenen taze karşılaştırma → panel görünür olsun (kullanıcı "göremiyorum" demişti)
+  useEffect(() => {
+    if (freshId && answer.id === freshId && scrolledForRef.current !== freshId) {
+      scrolledForRef.current = freshId;
+      panelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [freshId, answer.id]);
+  const setFilter = (f: 'diffs' | AnswerRowStatus) => { setFilterState(f); setShowAll(false); };
   const [decisions, setDecisions] = useState<Map<string, 'ours' | 'answer' | 'custom'>>(new Map());
   const [customs, setCustoms] = useState<Map<string, CustomDraft>>(new Map());
   const targetProfile = calibrations.find(c => c.id === run.calibrationId);
@@ -615,8 +628,9 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, onApplied }: {
     targetProfile?.name ?? (tr ? `${run.projectName} kalibrasyonu` : `${run.projectName} calibration`));
 
   const problems = answer.rows.filter(r => r.status !== 'match');
-  const matches = answer.rows.filter(r => r.status === 'match');
-  const shown = showAll ? problems : problems.slice(0, 12);
+  // tablo havuzu: uyum çubuğundaki duruma tıklayınca o durum filtrelenir
+  const pool = filter === 'diffs' ? problems : answer.rows.filter(r => r.status === filter);
+  const shownRows = showAll ? pool : pool.slice(0, 12);
   const applied = Boolean(answer.appliedAt);
   const decidable = !applied && problems.length > 0 && problems.every(r => r.id);
 
@@ -653,8 +667,8 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, onApplied }: {
   const projected = decidable ? projectedAccuracy(answer, decisionInputs) : answer.accuracy;
   const changedCount = decisionInputs.filter(d => d.choice !== 'ours').length;
 
-  async function applyDecisions() {
-    const bad = decisionInputs.find(d => d.choice === 'custom' && (!d.custom || d.custom.qty <= 0 || !d.custom.code));
+  async function applyWith(inputs: CalibrationDecisionInput[]) {
+    const bad = inputs.find(d => d.choice === 'custom' && (!d.custom || d.custom.qty <= 0 || !d.custom.code));
     if (bad) { toast.error(tr ? 'Özel değerlerde kod ve pozitif miktar zorunlu.' : 'Custom values need a code and positive qty.'); return; }
     if (!profileName.trim()) { toast.error(tr ? 'Profil adı boş olamaz.' : 'Profile name required.'); return; }
     setBusy(true);
@@ -666,7 +680,7 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, onApplied }: {
           idempotencyKey: crypto.randomUUID(),
           ...(targetProfile ? { profileId: targetProfile.id, expectedProfileVersion: targetProfile.version ?? 1 } : { expectedProfileVersion: 0 }),
           profileName: profileName.trim(),
-          decisions: decisionInputs,
+          decisions: inputs,
         }),
       });
       const d = await res.json();
@@ -681,14 +695,40 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, onApplied }: {
       setBusy(false);
     }
   }
+  const applyDecisions = () => applyWith(decisionInputs);
+
+  // Tek tık: Excel'in TAMAMINI kabul et ve hemen kalibre et (kullanıcının ana akışı)
+  function acceptAllAndCalibrate() {
+    if (busy || dirty) return;
+    const inputs: CalibrationDecisionInput[] = problems.filter(r => r.id).map(r => ({ itemId: r.id!, choice: 'answer' as const }));
+    if (!inputs.length) return;
+    const proj = projectedAccuracy(answer, inputs);
+    const fd = answer.counts.fieldDiff ?? 0;
+    const ok = window.confirm(tr
+      ? `Excel cevabının TAMAMI kabul edilecek:\n\n· ${answer.counts.missing} eksik kalem eklenecek\n· ${answer.counts.extra} fazla kalem çıkarılacak\n· ${answer.counts.qtyDiff + fd} kalem Excel değerine güncellenecek\n\nKarne %${answer.accuracy} → %${proj}. Profil bu kararlardan kural öğrenir ve sonraki dosyaya otomatik uygulanır. Devam?`
+      : `The ENTIRE Excel answer will be accepted:\n\n· ${answer.counts.missing} missing items added\n· ${answer.counts.extra} extra items removed\n· ${answer.counts.qtyDiff + fd} items updated to Excel values\n\nScorecard ${answer.accuracy}% → ${proj}%. The profile learns rules from this and auto-applies to the next file. Continue?`);
+    if (!ok) return;
+    setDecisions(new Map(inputs.map(i => [i.itemId, 'answer' as const])));
+    void applyWith(inputs);
+  }
 
   const accColor = answer.accuracy >= 90 ? 'var(--color-mint)' : answer.accuracy >= 75 ? 'var(--color-copper-bright)' : 'var(--color-danger)';
   const fieldDiffCount = answer.counts.fieldDiff ?? 0;
+  const answerItemCount = answer.counts.matched + answer.counts.qtyDiff + fieldDiffCount + answer.counts.missing;
+  // uyum çubuğu bölümleri: [durum, adet, renk, etiket]
+  const barSegments: Array<{ key: 'diffs' | AnswerRowStatus; n: number; color: string; label: string }> = [
+    { key: 'match', n: answer.counts.matched, color: 'var(--color-mint)', label: tr ? 'eşleşti' : 'matched' },
+    { key: 'qty_diff', n: answer.counts.qtyDiff, color: 'var(--color-copper)', label: tr ? 'miktar farkı' : 'qty differs' },
+    { key: 'field_diff', n: fieldDiffCount, color: 'var(--color-copper-bright)', label: tr ? 'çap/kod farkı' : 'size/code' },
+    { key: 'missing', n: answer.counts.missing, color: 'var(--color-danger)', label: tr ? 'bizde eksik' : 'missing' },
+    { key: 'extra', n: answer.counts.extra, color: 'var(--color-steel)', label: tr ? 'bizde fazla' : 'extra' },
+  ];
+  const barTotal = barSegments.reduce((s, x) => s + x.n, 0) || 1;
   return (
-    <div className="rise rise-1 panel panel-corners px-5 py-4">
+    <div ref={panelRef} className="rise rise-1 panel panel-corners scroll-mt-4 px-5 py-4">
       <div className="flex flex-wrap items-center gap-3">
         <span className="text-[12px] font-semibold uppercase tracking-wider text-copper">
-          {decidable ? '1 · ' : ''}⇪ {tr ? 'Cevap karşılaştırması' : 'Answer comparison'}
+          {decidable ? '1 · ' : ''}⇪ {tr ? 'Excel cevabı × bizim metraj' : 'Excel answer × our take-off'}
         </span>
         <span className="num text-[22px] font-bold" style={{ color: accColor }}>%{answer.accuracy}</span>
         {decidable && changedCount > 0 && projected !== answer.accuracy && (
@@ -696,42 +736,89 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, onApplied }: {
         )}
         <span className="font-data text-[10px] text-muted">{tr ? 'hedef' : 'target'} %{answer.targetAccuracy ?? 90}</span>
         {applied && <span className="chip"><span className="chip-dot" style={{ background: 'var(--color-mint)' }} />{tr ? 'kalibre edildi' : 'calibrated'}{answer.calibrationVersion ? ` · v${answer.calibrationVersion}` : ''}</span>}
-        <span className="chip"><span className="chip-dot" style={{ background: 'var(--color-mint)' }} />{answer.counts.matched} {tr ? 'eşleşti' : 'matched'}</span>
-        {answer.counts.qtyDiff > 0 && <span className="chip"><span className="chip-dot" style={{ background: 'var(--color-copper)' }} />{answer.counts.qtyDiff} {tr ? 'miktar farkı' : 'qty diff'}</span>}
-        {fieldDiffCount > 0 && <span className="chip"><span className="chip-dot" style={{ background: 'var(--color-copper)' }} />{fieldDiffCount} {tr ? 'çap/kod farkı' : 'size/code diff'}</span>}
-        {answer.counts.missing > 0 && <span className="chip"><span className="chip-dot" style={{ background: 'var(--color-danger)' }} />{answer.counts.missing} {tr ? 'bizde eksik' : 'missing'}</span>}
-        {answer.counts.extra > 0 && <span className="chip"><span className="chip-dot" style={{ background: 'var(--color-steel)' }} />{answer.counts.extra} {tr ? 'bizde fazla' : 'extra'}</span>}
-        <span className="ml-auto font-data text-[10px] text-muted">{answer.fileName}</span>
+        <span className="ml-auto font-data text-[10px] text-muted">
+          {answer.fileName} · “{answer.sheet}” · {answerItemCount} {tr ? 'kalem okundu' : 'items read'}
+        </span>
       </div>
 
-      {/* toplu kararlar */}
-      {decidable && (
-        <div className="mt-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[12px] font-semibold uppercase tracking-wider text-copper">
-              2 · {tr ? 'Karar ver' : 'Decide'}
-            </span>
-            <button onClick={() => setAll('answer')} className="btn !text-[12px]"
-              title={tr ? 'Tüm fark satırlarına Excel cevabının değeri yazılır (satır seçimlerinin üzerine yazar)' : 'Writes the Excel answer value to every diff row (overwrites per-row selections)'}>
-              ✓ {tr ? 'Cevabın tamamını kabul et' : 'Accept entire answer'}
+      {/* uyum çubuğu: iki listenin nasıl örtüştüğü tek bakışta */}
+      <div className="mt-3">
+        <div className="flex h-2.5 w-full overflow-hidden rounded border border-line" role="img"
+          aria-label={barSegments.filter(s => s.n > 0).map(s => `${s.n} ${s.label}`).join(', ')}>
+          {barSegments.filter(s => s.n > 0).map(s => (
+            <div key={s.key} style={{ width: `${(s.n / barTotal) * 100}%`, background: s.color, opacity: 0.85 }} />
+          ))}
+        </div>
+        <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 font-data text-[10.5px]">
+          {barSegments.filter(s => s.n > 0).map(s => (
+            <button key={s.key} onClick={() => setFilter(s.key)}
+              className={`flex items-center gap-1.5 transition-colors ${filter === s.key ? 'text-ink' : 'text-muted hover:text-ink'}`}
+              title={tr ? 'Tabloda yalnız bu durumu göster' : 'Filter the table to this status'}>
+              <span className="inline-block h-2 w-2 rounded-sm" style={{ background: s.color }} />
+              {s.n} {s.label}
             </button>
-            <button onClick={() => setAll('ours')} className="btn btn-ghost !text-[12px]"
+          ))}
+        </div>
+      </div>
+
+      {/* karar: iki yol — tek tıkla komple kabul+kalibre YA DA satır satır */}
+      {decidable && (
+        <div className="mt-4">
+          <span className="text-[12px] font-semibold uppercase tracking-wider text-copper">
+            2 · {tr ? 'Karar ver' : 'Decide'}
+          </span>
+          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            <button onClick={acceptAllAndCalibrate} disabled={busy || dirty}
+              className="btn btn-primary !h-auto !items-start !px-4 !py-3 text-left">
+              <span className="block">
+                <span className="block text-[13px] font-semibold">
+                  ✓ {tr ? 'Excel cevabını komple kabul et + kalibre et' : 'Accept the entire Excel + calibrate'}
+                </span>
+                <span className="mt-1 block font-data text-[10.5px] opacity-85">
+                  {tr
+                    ? `Tek tıkla: ${problems.length} farkın tamamı Excel değerine çekilir, profil öğrenir → %${projectedAccuracy(answer, problems.filter(r => r.id).map(r => ({ itemId: r.id!, choice: 'answer' as const })))}`
+                    : `One click: all ${problems.length} differences take the Excel values, the profile learns → ${projectedAccuracy(answer, problems.filter(r => r.id).map(r => ({ itemId: r.id!, choice: 'answer' as const })))}%`}
+                </span>
+              </span>
+            </button>
+            <div className="panel flex flex-col justify-center px-4 py-3">
+              <span className="text-[13px] font-semibold">
+                ⚙ {tr ? 'ya da satır satır incele' : 'or review row by row'}
+              </span>
+              <span className="mt-1 font-data text-[10.5px] text-muted">
+                {tr
+                  ? 'Aşağıdaki tabloda her fark için seç: Biz = bizim değer kalır · Cevap = Excel değeri yazılır · Özel = kendin yaz. Sonra "Kalibre et ve öğren".'
+                  : 'In the table below choose per difference: Ours = keep · Answer = take Excel value · Custom = type your own. Then "Calibrate & learn".'}
+              </span>
+            </div>
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <button onClick={() => setAll('answer')} className="btn btn-ghost !text-[11px]"
+              title={tr ? 'Tüm fark satırlarını "Cevap" olarak işaretler — kaydetmeden önce gözden geçirebilirsin' : 'Marks every diff row as "Answer" — review before saving'}>
+              {tr ? 'Tümünü Cevap işaretle (kaydetmeden)' : 'Mark all as Answer (without saving)'}
+            </button>
+            <button onClick={() => setAll('ours')} className="btn btn-ghost !text-[11px]"
               title={tr ? 'Tüm satırlarda bizim değer kalır (satır seçimlerinin üzerine yazar)' : 'Keeps our value on every row (overwrites per-row selections)'}>
               {tr ? 'Bizimkileri koru' : 'Keep ours'}
             </button>
-            <span className="font-data text-[10.5px] text-muted">
-              {tr ? 'ya da aşağıda satır satır seç' : 'or decide per row below'}
-            </span>
           </div>
-          <p className="mt-1.5 font-data text-[10.5px] text-muted">
-            {tr
-              ? 'Biz = bizim değer kalır · Cevap = Excel\'deki değer yazılır · Özel = kendin yaz'
-              : 'Ours = keep our value · Answer = take the Excel value · Custom = type your own'}
-          </p>
         </div>
       )}
 
-      {problems.length > 0 && (
+      {/* kalibre edildikten sonra: ne olduğunu net söyle */}
+      {applied && (
+        <div className="mt-3 rounded border px-3.5 py-2.5 font-data text-[11.5px]"
+          style={{
+            borderColor: 'color-mix(in oklab, var(--color-mint) 35%, transparent)',
+            background: 'color-mix(in oklab, var(--color-mint) 8%, transparent)',
+          }}>
+          ✓ {tr
+            ? <>Kalibre edildi{answer.calibrationVersion ? ` — profil v${answer.calibrationVersion}` : ''} · karne %{answer.accuracy}. Kabul ettiğin değerler satırlara işlendi; öğrenilen kurallar bu müşterinin <b>sonraki dosyasına otomatik</b> uygulanacak. Aşağıdaki tablo son durumu gösterir.</>
+            : <>Calibrated{answer.calibrationVersion ? ` — profile v${answer.calibrationVersion}` : ''} · scorecard {answer.accuracy}%. Accepted values were applied to the rows; learned rules will <b>auto-apply to this client&apos;s next file</b>. The table below shows the final state.</>}
+        </div>
+      )}
+
+      {answer.rows.length > 0 && (
         <div className="mt-3 overflow-auto">
           <table className="mtable">
             <thead>
@@ -748,7 +835,7 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, onApplied }: {
               </tr>
             </thead>
             <tbody className="font-data">
-              {[...shown, ...(showMatches ? matches : [])].map((r, i) => {
+              {shownRows.map((r, i) => {
                 const s = ANSWER_STATUS[r.status] ?? ANSWER_STATUS.qty_diff;
                 const c = r.id ? choiceOf(r.id) : 'ours';
                 const d = r.id ? (customs.get(r.id) ?? draftFrom(r)) : draftFrom(r);
@@ -817,19 +904,21 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, onApplied }: {
               })}
             </tbody>
           </table>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {problems.length > 12 && (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            {pool.length > 12 && (
               <button onClick={() => setShowAll(v => !v)} className="btn btn-ghost !text-[11px]">
-                {showAll ? (tr ? 'daralt' : 'collapse') : `${problems.length - 12} ${tr ? 'satır daha göster' : 'more rows'}`}
+                {showAll ? (tr ? 'daralt' : 'collapse') : `${pool.length - 12} ${tr ? 'satır daha göster' : 'more rows'}`}
               </button>
             )}
-            {matches.length > 0 && (
-              <button onClick={() => setShowMatches(v => !v)} className="btn btn-ghost !text-[11px]"
-                title={tr ? 'Sistemin doğru bulduğu satırları da listele' : 'Also list the rows the system got right'}>
-                {showMatches
-                  ? (tr ? 'eşleşenleri gizle' : 'hide matches')
-                  : `${tr ? 'eşleşenleri de göster' : 'show matches too'} (${matches.length})`}
+            {filter !== 'diffs' && (
+              <button onClick={() => setFilter('diffs')} className="btn btn-ghost !text-[11px]">
+                ← {tr ? 'tüm farklara dön' : 'back to all differences'}
               </button>
+            )}
+            {pool.length === 0 && (
+              <span className="font-data text-[10.5px] text-muted">
+                {tr ? 'Bu durumda satır yok.' : 'No rows with this status.'}
+              </span>
             )}
           </div>
         </div>
