@@ -102,7 +102,8 @@ async function processRun(run: Run, buf: Buffer, rules: CalibrationRules, lang: 
     stages = stageSet(stages, 'scan', 'active');
     await push();
 
-    // Yerel Plant3D string-kazıyıcı: yapısal veri yoksa (Revit/AutoCAD-solid NWD)
+    // Yerel Plant3D string-kazıyıcı: yapısal veri yoksa YA DA boyutsuzsa
+    // (Revit / karışık AutoCAD NWD — hiç çap çıkmıyorsa teklif verilemez)
     // APS bulut yoluna düşer — çeviri asenkron sürer, istemci /advance ile ilerletir.
     let parsed: ReturnType<typeof parseNwd> | null = null;
     try {
@@ -112,16 +113,25 @@ async function processRun(run: Run, buf: Buffer, rules: CalibrationRules, lang: 
       if (!apsEnabled) throw parseError;
       parsed = null;
     }
-    if (!parsed || parsed.components.length === 0) {
-      if (!apsEnabled) throw new Error('Geçerli NWD veri akışı bulunamadı.');
-      stages = stageSet(stages, 'scan', 'active', { 'bulut': 'Autodesk çevirisi başlatıldı' });
+    if ((!parsed || parsed.components.length === 0) && !apsEnabled) {
+      throw new Error('Geçerli NWD veri akışı bulunamadı.');
+    }
+    // Saf Plant3D exportlarında boyutlu oran ~%100; karışık/yabancı dosyada 0'a düşer.
+    const sizedRatio = parsed && parsed.components.length
+      ? parsed.components.filter(c => c.s1 != null).length / parsed.components.length
+      : 0;
+    if (apsEnabled && (!parsed || parsed.components.length === 0 || sizedRatio < 0.3)) {
+      const reason = !parsed || parsed.components.length === 0
+        ? 'yerel veri yok'
+        : `boyutlu oran %${Math.round(sizedRatio * 100)}`;
+      stages = stageSet(stages, 'scan', 'active', { 'bulut': 'Autodesk çevirisi başlatıldı', 'sebep': reason });
       const objectKey = `${run.id}-${storageKeyName(run.fileName)}`;
       const { urn } = await apsSubmit(objectKey, buf);
       await updateRunMeta(run.id, {
         progress: stages,
         aps: { urn, objectKey, submittedAt: new Date().toISOString() },
       });
-      console.log(`[aps] ${run.fileName} bulut çevirisine gönderildi (yerel komponent yok)`);
+      console.log(`[aps] ${run.fileName} bulut çevirisine gönderildi (${reason})`);
       return; // tamamlama /api/runs/[id]/advance üzerinden
     }
 
