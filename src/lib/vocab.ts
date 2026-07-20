@@ -44,6 +44,12 @@ export function applyRules(parsed: ParseResult, rules: CalibrationRules): {
     // çıktı imzasına uygulanır. Hat/alt-tip varsa eşleşmeyi daha da daraltır.
     for (const correction of rules.itemCorrections ?? []) {
       const m = correction.match;
+      // Tek-örnek güvenlik kapısı: "boyut bilinmiyor" (s1=null) kovasına DEĞER atayan
+      // kurallar ya hat/alt-tip bağlamı taşımalı ya da ≥2 dosyada doğrulanmış olmalı —
+      // yoksa tek dosyadaki '?→10"' kabulü sonraki her dosyanın boyutsuzlarına yayılırdı.
+      // (aps-extract.ts applyRowRules ile AYNI semantik tutulur.)
+      if (m.s1 === null && Object.prototype.hasOwnProperty.call(correction.set, 's1')
+        && correction.evidenceCount < 2 && m.line === undefined && m.sub === undefined) continue;
       if (m.code !== code || m.s1 !== s1 || m.s2 !== s2 || m.unit !== unit
         || (m.line !== undefined && m.line !== line)
         || (m.sub !== undefined && m.sub !== sub)) continue;

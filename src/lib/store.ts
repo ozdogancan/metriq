@@ -152,11 +152,25 @@ export async function saveRows(runId: string, rows: MtoRow[]): Promise<void> {
       id: r.id, idx, line: r.line, code: r.code, sub: r.sub,
       s1: r.s1, s2: r.s2, qty: r.qty, unit: r.unit, remark: r.remark, scope: r.scope, edited: r.edited ?? false,
     }));
+    // replace_mto_rows RPC satırlarla birlikte row_revision+1, rows_hash=null,
+    // answer=null invalidasyonunu da atomik yapar
     const { error } = await client().rpc('replace_mto_rows', { p_run_id: runId, p_rows: payload });
     if (error) throw error;
     return;
   }
   await writeJson(`rows-${runId}.json`, rows);
+  // Supabase-dışı modlar da RPC ile AYNI invalidasyon semantiğini uygular —
+  // yoksa bayat cevap karşılaştırmaları satır düzenlemesinden sonra geçerli kalırdı.
+  const run = isPg ? await kvGet<Run>(`run-${runId}`) : (await readJson<Run[]>('runs.json', [])).find(r => r.id === runId);
+  if (run) {
+    const bumped: Run = { ...run, rowRevision: (run.rowRevision ?? 0) + 1, rowsHash: null, answer: null };
+    if (isPg) await kvSet(`run-${runId}`, bumped);
+    else {
+      const runs = await readJson<Run[]>('runs.json', []);
+      const i = runs.findIndex(r => r.id === runId);
+      if (i >= 0) { runs[i] = bumped; await writeJson('runs.json', runs); }
+    }
+  }
 }
 
 export async function getSteel(runId: string): Promise<SteelRow[]> {
@@ -657,6 +671,29 @@ export async function updateRunMeta(runId: string, patch: { progress?: import('.
 }
 
 // ---------- Bayat işlem bekçisi (watchdog) ----------
+// APS ready-tamamlama kilidi: koşullu UPDATE ile tek instance kazanır (advance
+// route'unun process-bellek inFlight seti lambda'lar arası korumaz). TTL geçince
+// kilit doğal düşer — tamamlama yarıda kalırsa sonraki poll yeniden dener.
+export async function claimApsRun(runId: string, ttlMs = 120_000): Promise<boolean> {
+  const now = Date.now();
+  const run = await getRun(runId);
+  if (!run || run.status !== 'processing' || !run.aps) return false;
+  const cu = run.aps.claimedUntil;
+  if (cu && new Date(cu).getTime() > now) return false;
+  const claimed = { ...run.aps, claimedUntil: new Date(now + ttlMs).toISOString() };
+  if (isSupabase) {
+    let q = client().from('runs').update({ aps: claimed }).eq('id', runId).eq('status', 'processing');
+    // yalnız okuduğumuz claimedUntil hâlâ yerindeyse yaz (compare-and-set)
+    q = cu ? q.eq('aps->>claimedUntil', cu) : q.is('aps->claimedUntil', null);
+    const { data, error } = await q.select('id');
+    if (error) throw error;
+    return (data ?? []).length > 0;
+  }
+  // pg/local: tek instance çalışır — okuma-kontrolü yeterli
+  await updateRunMeta(runId, { aps: claimed });
+  return true;
+}
+
 const STALE_PROCESSING_MS = 15 * 60 * 1000; // 15 dk
 const STALE_APS_MS = 60 * 60 * 1000;        // bulut çevirisi (APS) dakikalar sürer — 60 dk tavan
 

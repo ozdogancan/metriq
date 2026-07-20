@@ -361,7 +361,7 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
 
       <AiInsight lang={lang} runId={run.id} />
 
-      {/* kalibrasyon kaydet */}
+      {/* manuel-düzeltme profili — cevap-tezgâhından AYRI, daha dar bir öğrenme yolu */}
       <div className="rise rise-4 flex flex-wrap items-center gap-3 border-t border-line pt-5">
         <input value={calName} onChange={e => setCalName(e.target.value)}
           placeholder={`${t(lang, 'calibration')} — ${t(lang, 'name').toLowerCase()}`}
@@ -369,7 +369,13 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
           className="panel w-64 px-3.5 py-2.5 text-[13px] outline-none focus:border-copper/50" />
         <button onClick={saveCalibration} className="btn">◈ {t(lang, 'save_calibration')}</button>
         <span className="font-data text-[11px] text-muted">
-          {tr ? 'Kod düzeltmelerin profile işlenir; sonraki metrajlara uygulanır.' : 'Your code corrections are folded into the profile; applied to future takeoffs.'}
+          {answer && !answer.appliedAt
+            ? (tr
+              ? 'Cevap karşılaştırması açıkken kalibrasyonu YUKARIDAKİ panelden yap — bu buton yalnız tablodaki manuel kod/hat düzeltmelerinden öğrenir.'
+              : 'While an answer comparison is open, calibrate from the panel ABOVE — this button only learns from manual code/line edits in the table.')
+            : (tr
+              ? 'Tablodaki manuel kod/hat düzeltmelerinden öğrenir; cevap Excel\'inden öğrenmek için yukarıdan cevap yükle.'
+              : 'Learns from manual code/line edits in the table; to learn from an answer Excel, upload one above.')}
         </span>
       </div>
     </div>
@@ -559,12 +565,29 @@ function MtoTable({ lang, rows, onEdit, onRemove, emptyMsg }: {
 }
 
 // ---- cevap karşılaştırma karnesi + karar tezgâhı: müşteri Excel'i = ground truth ----
-const ANSWER_STATUS: Record<string, { tr: string; en: string; color: string }> = {
-  missing: { tr: 'bizde eksik', en: 'missing in ours', color: 'var(--color-danger)' },
-  qty_diff: { tr: 'miktar farkı', en: 'qty differs', color: 'var(--color-copper)' },
-  field_diff: { tr: 'çap/kod farkı', en: 'size/code differs', color: 'var(--color-copper)' },
-  extra: { tr: 'bizde fazla', en: 'extra in ours', color: 'var(--color-steel)' },
-  match: { tr: 'eşleşti', en: 'matched', color: 'var(--color-mint)' },
+const ANSWER_STATUS: Record<string, { tr: string; en: string; color: string; tipTr: string; tipEn: string }> = {
+  missing: {
+    tr: 'bizde eksik', en: 'missing in ours', color: 'var(--color-danger)',
+    tipTr: 'Cevap Excel\'inde var, bizim metrajda yok — Cevap seçersen satır eklenir',
+    tipEn: 'In the answer Excel but not in our take-off — choosing Answer adds the row',
+  },
+  qty_diff: {
+    tr: 'miktar farkı', en: 'qty differs', color: 'var(--color-copper)',
+    tipTr: 'Kod ve çap aynı, miktarlar farklı', tipEn: 'Same code and size, quantities differ',
+  },
+  field_diff: {
+    tr: 'çap/kod farkı', en: 'size/code differs', color: 'var(--color-copper)',
+    tipTr: 'Miktar aynı, kod veya çap farklı', tipEn: 'Same quantity, code or size differs',
+  },
+  extra: {
+    tr: 'bizde fazla', en: 'extra in ours', color: 'var(--color-steel)',
+    tipTr: 'Bizde var, cevap Excel\'inde yok — Cevap seçersen satır çıkarılır',
+    tipEn: 'In our take-off but not in the answer — choosing Answer removes the row',
+  },
+  match: {
+    tr: 'eşleşti', en: 'matched', color: 'var(--color-mint)',
+    tipTr: 'İki taraf aynı — karar gerekmez', tipEn: 'Both sides agree — no decision needed',
+  },
 };
 
 type CustomDraft = { code: string; s1: string; s2: string; qty: string; unit: 'M' | 'EA' };
@@ -583,6 +606,7 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, onApplied }: {
 }) {
   const tr = lang === 'tr';
   const [showAll, setShowAll] = useState(false);
+  const [showMatches, setShowMatches] = useState(false);
   const [busy, setBusy] = useState(false);
   const [decisions, setDecisions] = useState<Map<string, 'ours' | 'answer' | 'custom'>>(new Map());
   const [customs, setCustoms] = useState<Map<string, CustomDraft>>(new Map());
@@ -591,6 +615,7 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, onApplied }: {
     targetProfile?.name ?? (tr ? `${run.projectName} kalibrasyonu` : `${run.projectName} calibration`));
 
   const problems = answer.rows.filter(r => r.status !== 'match');
+  const matches = answer.rows.filter(r => r.status === 'match');
   const shown = showAll ? problems : problems.slice(0, 12);
   const applied = Boolean(answer.appliedAt);
   const decidable = !applied && problems.length > 0 && problems.every(r => r.id);
@@ -603,6 +628,10 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, onApplied }: {
     }
   }
   function setAll(c: 'ours' | 'answer') {
+    // toplu karar satır-bazlı seçimleri ezer — kullanıcının emeği sessizce kaybolmasın
+    if (decisions.size > 0 && !window.confirm(tr
+      ? `Satır bazlı ${decisions.size} seçimin var — hepsinin üzerine yazılsın mı?`
+      : `You have ${decisions.size} per-row selections — overwrite them all?`)) return;
     setDecisions(new Map(problems.filter(r => r.id).map(r => [r.id!, c])));
   }
 
@@ -659,7 +688,7 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, onApplied }: {
     <div className="rise rise-1 panel panel-corners px-5 py-4">
       <div className="flex flex-wrap items-center gap-3">
         <span className="text-[12px] font-semibold uppercase tracking-wider text-copper">
-          ⇪ {tr ? 'Cevap karşılaştırması' : 'Answer comparison'}
+          {decidable ? '1 · ' : ''}⇪ {tr ? 'Cevap karşılaştırması' : 'Answer comparison'}
         </span>
         <span className="num text-[22px] font-bold" style={{ color: accColor }}>%{answer.accuracy}</span>
         {decidable && changedCount > 0 && projected !== answer.accuracy && (
@@ -677,16 +706,28 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, onApplied }: {
 
       {/* toplu kararlar */}
       {decidable && (
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <button onClick={() => setAll('answer')} className="btn !text-[12px]">
-            ✓ {tr ? 'Cevabın tamamını kabul et' : 'Accept entire answer'}
-          </button>
-          <button onClick={() => setAll('ours')} className="btn btn-ghost !text-[12px]">
-            {tr ? 'Bizimkileri koru' : 'Keep ours'}
-          </button>
-          <span className="font-data text-[10.5px] text-muted">
-            {tr ? 'ya da aşağıda satır satır seç' : 'or decide per row below'}
-          </span>
+        <div className="mt-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[12px] font-semibold uppercase tracking-wider text-copper">
+              2 · {tr ? 'Karar ver' : 'Decide'}
+            </span>
+            <button onClick={() => setAll('answer')} className="btn !text-[12px]"
+              title={tr ? 'Tüm fark satırlarına Excel cevabının değeri yazılır (satır seçimlerinin üzerine yazar)' : 'Writes the Excel answer value to every diff row (overwrites per-row selections)'}>
+              ✓ {tr ? 'Cevabın tamamını kabul et' : 'Accept entire answer'}
+            </button>
+            <button onClick={() => setAll('ours')} className="btn btn-ghost !text-[12px]"
+              title={tr ? 'Tüm satırlarda bizim değer kalır (satır seçimlerinin üzerine yazar)' : 'Keeps our value on every row (overwrites per-row selections)'}>
+              {tr ? 'Bizimkileri koru' : 'Keep ours'}
+            </button>
+            <span className="font-data text-[10.5px] text-muted">
+              {tr ? 'ya da aşağıda satır satır seç' : 'or decide per row below'}
+            </span>
+          </div>
+          <p className="mt-1.5 font-data text-[10.5px] text-muted">
+            {tr
+              ? 'Biz = bizim değer kalır · Cevap = Excel\'deki değer yazılır · Özel = kendin yaz'
+              : 'Ours = keep our value · Answer = take the Excel value · Custom = type your own'}
+          </p>
         </div>
       )}
 
@@ -697,29 +738,48 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, onApplied }: {
               <tr>
                 <th>{tr ? 'durum' : 'status'}</th><th>{tr ? 'kod' : 'code'}</th>
                 <th className="!text-right">{tr ? 'çap' : 'size'}</th>
-                <th className="!text-right">{tr ? 'biz' : 'ours'}</th>
-                <th className="!text-right">{tr ? 'cevap' : 'answer'}</th>
+                <th className="!text-right" title={tr ? 'Metriq motorunun modelden hesapladığı miktar' : 'Quantity computed by the Metriq engine from the model'}>
+                  {tr ? 'bizim miktar' : 'our qty'}
+                </th>
+                <th className="!text-right" title={`${tr ? 'Müşteri cevap dosyası' : 'Client answer file'}: ${answer.fileName}`}>
+                  {tr ? 'Excel cevabı' : 'answer (Excel)'}
+                </th>
                 {decidable && <th>{tr ? 'karar' : 'decision'}</th>}
               </tr>
             </thead>
             <tbody className="font-data">
-              {shown.map((r, i) => {
+              {[...shown, ...(showMatches ? matches : [])].map((r, i) => {
                 const s = ANSWER_STATUS[r.status] ?? ANSWER_STATUS.qty_diff;
                 const c = r.id ? choiceOf(r.id) : 'ours';
                 const d = r.id ? (customs.get(r.id) ?? draftFrom(r)) : draftFrom(r);
+                // kod/çap farkında İKİ tarafı da göster: biz → cevap (yön hep aynı)
+                const oursV = r.oursSide?.value, ansV = r.answerSide?.value;
+                const codeCell = r.status === 'field_diff' && oursV && ansV && oursV.code !== ansV.code
+                  ? `${oursV.code} → ${ansV.code}`
+                  : r.code;
+                const sizeOf = (v: { s1: number | null; s2: number }) => `${v.s1 ?? '?'}${v.s2 ? `x${v.s2}` : ''}″`;
+                const sizesDiffer = oursV && ansV && (oursV.s1 !== ansV.s1 || oursV.s2 !== ansV.s2);
+                const sizeCell = r.status === 'field_diff' && oursV && ansV && sizesDiffer
+                  ? `${sizeOf(oursV)} → ${sizeOf(ansV)} ${r.unit}`
+                  : `${r.s1 ?? '?'}${r.s2 ? `x${r.s2}` : ''}″ ${r.unit}`;
                 return (
                   <Fragment key={r.id ?? i}>
                     <tr>
-                      <td><span className="chip text-[10.5px]"><span className="chip-dot" style={{ background: s.color }} />{tr ? s.tr : s.en}</span></td>
-                      <td>{r.code}{r.status === 'field_diff' && r.answerSide && r.oursSide && r.answerSide.value.code !== r.oursSide.value.code ? ` → ${r.answerSide.value.code}` : ''}</td>
-                      <td className="num !text-right">{r.s1 ?? '?'}{r.s2 ? `x${r.s2}` : ''}″ {r.unit}</td>
+                      <td><span className="chip text-[10.5px]" title={tr ? s.tipTr : s.tipEn}><span className="chip-dot" style={{ background: s.color }} />{tr ? s.tr : s.en}</span></td>
+                      <td>{codeCell}</td>
+                      <td className="num !text-right">{sizeCell}</td>
                       <td className="num !text-right">{r.ours}</td>
                       <td className="num !text-right">{r.answer}</td>
-                      {decidable && r.id && (
+                      {decidable && r.id && r.status !== 'match' && (
                         <td>
                           <div className="flex gap-1">
                             {(['ours', 'answer', 'custom'] as const).map(k => (
                               <button key={k} onClick={() => setChoice(r.id!, k, r)}
+                                title={k === 'ours'
+                                  ? (tr ? 'Bizim değer kalır' : 'Keep our value')
+                                  : k === 'answer'
+                                    ? (tr ? 'Excel\'deki değer yazılır' : 'Take the Excel value')
+                                    : (tr ? 'Kendi değerini gir' : 'Enter your own value')}
                                 className={`rounded border px-2 py-0.5 text-[10.5px] transition-colors ${c === k
                                   ? 'border-copper/70 bg-copper/15 text-copper-bright'
                                   : 'border-line text-muted hover:border-copper/40'}`}>
@@ -729,6 +789,7 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, onApplied }: {
                           </div>
                         </td>
                       )}
+                      {decidable && r.status === 'match' && <td className="text-muted">—</td>}
                     </tr>
                     {decidable && r.id && c === 'custom' && (
                       <tr>
@@ -756,33 +817,60 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, onApplied }: {
               })}
             </tbody>
           </table>
-          {problems.length > 12 && (
-            <button onClick={() => setShowAll(v => !v)} className="btn btn-ghost mt-2 !text-[11px]">
-              {showAll ? (tr ? 'daralt' : 'collapse') : `${problems.length - 12} ${tr ? 'satır daha göster' : 'more rows'}`}
-            </button>
-          )}
+          <div className="mt-2 flex flex-wrap gap-2">
+            {problems.length > 12 && (
+              <button onClick={() => setShowAll(v => !v)} className="btn btn-ghost !text-[11px]">
+                {showAll ? (tr ? 'daralt' : 'collapse') : `${problems.length - 12} ${tr ? 'satır daha göster' : 'more rows'}`}
+              </button>
+            )}
+            {matches.length > 0 && (
+              <button onClick={() => setShowMatches(v => !v)} className="btn btn-ghost !text-[11px]"
+                title={tr ? 'Sistemin doğru bulduğu satırları da listele' : 'Also list the rows the system got right'}>
+                {showMatches
+                  ? (tr ? 'eşleşenleri gizle' : 'hide matches')
+                  : `${tr ? 'eşleşenleri de göster' : 'show matches too'} (${matches.length})`}
+              </button>
+            )}
+          </div>
         </div>
       )}
 
       {/* kalibre et ve öğren */}
       {decidable && (
-        <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-line pt-3.5">
-          <input value={profileName} onChange={e => setProfileName(e.target.value)}
-            className="panel w-56 px-3 py-2 text-[12.5px] outline-none focus:border-copper/60"
-            placeholder={tr ? 'Profil adı' : 'Profile name'} />
-          <button onClick={applyDecisions} disabled={busy || dirty} className="btn btn-primary">
-            {busy ? (tr ? 'Uygulanıyor…' : 'Applying…') : `◈ ${tr ? 'Kalibre et ve öğren' : 'Calibrate & learn'} → %${projected}`}
-          </button>
-          {targetProfile && (
-            <span className="font-data text-[10.5px] text-muted">
-              {tr ? 'profil' : 'profile'}: {targetProfile.name} v{targetProfile.version ?? 1}
+        <div className="mt-4 border-t border-line pt-3.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[12px] font-semibold uppercase tracking-wider text-copper">
+              3 · {tr ? 'Kaydet ve öğret' : 'Save & teach'}
             </span>
-          )}
-          {dirty && (
-            <span className="font-data text-[10.5px] text-danger">
-              {tr ? 'Kaydedilmemiş düzenlemen var — önce kaydet, sonra cevabı yeniden karşılaştır.' : 'You have unsaved edits — save first, then re-compare the answer.'}
-            </span>
-          )}
+            <span className="font-data text-[10.5px] text-muted">{tr ? 'öğrenilecek profil:' : 'learn into profile:'}</span>
+            <input value={profileName} onChange={e => setProfileName(e.target.value)}
+              className="panel w-56 px-3 py-2 text-[12.5px] outline-none focus:border-copper/60"
+              placeholder={tr ? 'Profil adı' : 'Profile name'} />
+            <button onClick={applyDecisions} disabled={busy || dirty} className="btn btn-primary"
+              title={tr ? 'Kararlar uygulanınca karne tahmini bu yüzdeye çıkar' : 'Projected scorecard after your decisions are applied'}>
+              {busy ? (tr ? 'Uygulanıyor…' : 'Applying…') : `◈ ${tr ? 'Kalibre et ve öğren' : 'Calibrate & learn'} → %${projected}`}
+            </button>
+            {changedCount > 0 && (
+              <span className="font-data text-[10.5px] text-copper-bright">
+                {changedCount} {tr ? 'satırda değişiklik seçtin' : 'rows will change'}
+              </span>
+            )}
+            {targetProfile && (
+              <span className="font-data text-[10.5px] text-muted">
+                {tr ? 'profil' : 'profile'}: {targetProfile.name} v{targetProfile.version ?? 1}
+              </span>
+            )}
+            {dirty && (
+              <span className="font-data text-[10.5px] text-danger">
+                {tr ? 'Kaydedilmemiş düzenlemen var — önce kaydet, sonra cevabı yeniden karşılaştır.' : 'You have unsaved edits — save first, then re-compare the answer.'}
+              </span>
+            )}
+          </div>
+          <p className="mt-1.5 font-data text-[10.5px] text-muted">
+            {tr
+              ? 'Kaydedince satırlar kararlarına göre güncellenir, profil bu kararlardan kural öğrenir ve bu müşterinin SONRAKİ dosyasına otomatik uygulanır. Rakamlar yalnız senin kararınla değişir.'
+              : 'On save, rows update per your decisions, the profile learns rules from them, and they auto-apply to this client\'s NEXT file. Numbers change only by your decision.'}
+          </p>
         </div>
       )}
       {!decidable && !applied && problems.length > 0 && (
@@ -790,11 +878,6 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, onApplied }: {
           {tr ? 'Bu karşılaştırma eski formatta — karar verebilmek için cevabı yeniden yükle.' : 'This comparison is in the old format — re-upload the answer to make decisions.'}
         </p>
       )}
-      <p className="mt-2.5 font-data text-[10px] text-muted">
-        {tr
-          ? 'Rakamlar yalnız senin kararınla değişir: Biz = bizim değer kalır · Cevap = müşteri değeri yazılır · Özel = senin yazdığın. Kararların profile işlenir ve bu müşterinin sonraki dosyasına otomatik uygulanır.'
-          : 'Numbers change only by your decision: Ours = keep our value · Answer = take the client\'s · Custom = yours. Decisions are folded into the profile and auto-applied to this client\'s next file.'}
-      </p>
     </div>
   );
 }

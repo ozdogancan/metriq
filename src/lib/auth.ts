@@ -1,6 +1,6 @@
 // Metriq — hafif oturum katmanı: HMAC imzalı cookie, env-tanımlı kullanıcılar
 import 'server-only';
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 
 // AUTH_SECRET every ortamda zorunlu: bilinen bir dev fallback'i imzalı cookie'yi
 // dışarı açılan geliştirme sunucularında forge edilebilir hâle getirirdi.
@@ -26,6 +26,13 @@ function sign(payload: string): string {
 export function verifyCredentials(email: string, password: string): boolean {
   const stored = users().get(email.trim().toLowerCase());
   if (!stored) return false;
+  // Tercih edilen biçim: "sha256:<hex>" — env'de düz parola durmaz, uzunluk da sızmaz.
+  // Düz metin biçimi geriye-uyum için desteklenir (mevcut AUTH_USERS bozulmasın).
+  if (stored.startsWith('sha256:')) {
+    const a = Buffer.from(stored.slice(7), 'hex');
+    const b = createHash('sha256').update(password).digest();
+    return a.length === b.length && timingSafeEqual(a, b);
+  }
   const a = Buffer.from(stored);
   const b = Buffer.from(password);
   return a.length === b.length && timingSafeEqual(a, b);

@@ -84,6 +84,21 @@ export type ApsPhase =
 // ≈ 460 MB JSON) tek istekte parse etmek OOM riski — dürüst hata ver.
 const MAX_PROPS_BYTES = 100 * 1024 * 1024;
 
+// Gövdeyi chunk chunk oku, tavanı DEKOMPRESE bayt üzerinden uygula.
+// content-length'e güvenilmez: header hiç gelmeyebilir (chunked) ve gzip'te
+// SIKIŞTIRILMIŞ boyutu taşır (~10x küçük) — guard'ı ikisi de deler.
+async function readBodyCapped(res: Response, cap: number): Promise<string | null> {
+  if (!res.body) return null;
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
+    total += chunk.byteLength;
+    if (total > cap) return null; // erken dönüş stream'i cancel eder
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 // Çeviri/çıkarım durumunu İLERLET — hızlı döner (Vercel 300sn sınırına uygun,
 // istemci ProcessingLive periyodik çağırır). 'ready' geldiğinde collection tam listedir.
 export async function apsAdvance(urn: string, knownGuid?: string): Promise<ApsPhase> {
@@ -105,10 +120,15 @@ export async function apsAdvance(urn: string, knownGuid?: string): Promise<ApsPh
   const pr = await authed(`/modelderivative/v2/designdata/${urn}/metadata/${guid}/properties?forceget=true`);
   if (pr.status === 202) return { phase: 'extracting', guid };
   if (pr.status !== 200) return { phase: 'failed', message: `APS properties ${pr.status}` };
-  const len = Number(pr.headers.get('content-length') ?? 0);
-  if (len > MAX_PROPS_BYTES) {
-    return { phase: 'failed', message: `Model property verisi çok büyük (${Math.round(len / 1e6)} MB) — bulut çıkarım sınırı 100 MB` };
+  // content-length yalnız hızlı-ret ipucu (gzip'te sıkıştırılmış boyut); asıl sınır okurken
+  const hinted = Number(pr.headers.get('content-length') ?? 0);
+  if (hinted > MAX_PROPS_BYTES) {
+    return { phase: 'failed', message: `Model property verisi çok büyük (${Math.round(hinted / 1e6)} MB) — bulut çıkarım sınırı 100 MB` };
   }
-  const d = await pr.json();
+  const text = await readBodyCapped(pr, MAX_PROPS_BYTES);
+  if (text === null) {
+    return { phase: 'failed', message: 'Model property verisi çok büyük — bulut çıkarım sınırı 100 MB' };
+  }
+  const d = JSON.parse(text);
   return { phase: 'ready', guid, collection: d.data?.collection ?? [] };
 }

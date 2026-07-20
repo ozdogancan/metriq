@@ -208,6 +208,10 @@ function applyRowRules(rowsIn: MtoRow[], rules: CalibrationRules): MtoRow[] {
     code = rules.codeRenames[code] ?? code;
     for (const correction of rules.itemCorrections ?? []) {
       const m = correction.match;
+      // Tek-örnek güvenlik kapısı — vocab.ts push içindekiyle AYNI semantik:
+      // s1=null kovasına değer atayan kurallar bağlamsız + tek-kanıtlıysa uygulanmaz.
+      if (m.s1 === null && Object.prototype.hasOwnProperty.call(correction.set, 's1')
+        && correction.evidenceCount < 2 && m.line === undefined && m.sub === undefined) continue;
       if (m.code !== code || m.s1 !== s1 || m.s2 !== s2 || m.unit !== unit
         || (m.line !== undefined && m.line !== r0.line)
         || (m.sub !== undefined && m.sub !== r0.sub)) continue;

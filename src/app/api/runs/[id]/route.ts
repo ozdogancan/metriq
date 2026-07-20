@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
-import { getRun, getRows, getSteel, saveRows, saveRun, deleteRun, addLearningEvents, resolveStaleRun } from '@/lib/store';
+import { getRun, getRows, getSteel, saveRows, updateRunMeta, deleteRun, addLearningEvents, resolveStaleRun } from '@/lib/store';
 import { computeTotals } from '@/lib/vocab';
 import { RowsPatchSchema, zodMessage } from '@/lib/schemas';
 import type { LearningEvent, MtoRow } from '@/lib/types';
@@ -49,7 +49,10 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
     const steel = await getSteel(id);
     run.totals = computeTotals(rows, steel);
     await saveRows(id, rows);
-    await saveRun(run);
+    // 🔴 saveRun(run) KULLANMA: getRun anındaki bayat rowRevision/rowsHash/answer'ı
+    // geri yazar — saveRows'un yaptığı invalidasyonu (revision+1, hash=null) geri sarardı
+    // ve bayat cevap karşılaştırmaları yeniden geçerli görünürdü. Alan-hedefli patch:
+    await updateRunMeta(id, { totals: run.totals, answer: null });
 
     // Kullanıcı düzeltmeleri → yapılandırılmış öğrenme olayları (sistem böyle öğrenir)
     try {

@@ -6,7 +6,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { apsAdvance } from '@/lib/aps';
 import { extractFromApsProps } from '@/lib/parser/aps-extract';
-import { getRun, saveRows, saveSteel, updateRunMeta, addNotification, listCalibrations } from '@/lib/store';
+import { getRun, saveRows, saveSteel, updateRunMeta, addNotification, listCalibrations, claimApsRun } from '@/lib/store';
 import { sendPush } from '@/lib/notify';
 import { computeComplexity, runAudit, aiEnabled } from '@/lib/ai';
 import { DEFAULT_RULES, type CalibrationRules, type Run, type StageEvent } from '@/lib/types';
@@ -26,12 +26,20 @@ function stageSet(stages: StageEvent[], key: StageEvent['key'], status: StageEve
     : s);
 }
 
-async function resolveRules(run: Run): Promise<CalibrationRules> {
+// Bulut yolunda da "sonraki dosyada kurallar kendiliğinden" sözü geçerli:
+// açık profil yoksa aynı vokabülün EN GÜNCEL öğrenilmiş profili otomatik uygulanır
+// (yerel yoldaki processRun autoDetect kalıbının birebir karşılığı).
+async function resolveRules(run: Run): Promise<{ rules: CalibrationRules; appliedId: string | null; appliedName: string | null }> {
+  const cals = await listCalibrations();
   if (run.calibrationId) {
-    const cal = (await listCalibrations()).find(c => c.id === run.calibrationId);
-    if (cal) return cal.rules;
+    const cal = cals.find(c => c.id === run.calibrationId);
+    if (cal) return { rules: cal.rules, appliedId: cal.id, appliedName: cal.name };
   }
-  return DEFAULT_RULES[run.vocab] ?? DEFAULT_RULES['steel-plant'];
+  const learned = cals
+    .filter(c => c.rules.vocab === run.vocab)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+  if (learned) return { rules: learned.rules, appliedId: learned.id, appliedName: learned.name };
+  return { rules: DEFAULT_RULES[run.vocab] ?? DEFAULT_RULES['steel-plant'], appliedId: null, appliedName: null };
 }
 
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
@@ -72,9 +80,15 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       return NextResponse.json({ phase: 'failed', error: state.message });
     }
 
-    // ready → tam çıkarım + tamamlama
+    // ready → tam çıkarım + tamamlama. Önce DB-seviyesi claim: iki lambda/sekme
+    // aynı işi paralel bitirmesin (çift bildirim + çift AI maliyeti önlenir).
+    if (!(await claimApsRun(id))) return NextResponse.json({ phase: 'busy' });
     const t0 = Date.now();
-    const rules = await resolveRules(run);
+    const { rules, appliedId, appliedName } = await resolveRules(run);
+    if (appliedId && appliedId !== run.calibrationId) {
+      await updateRunMeta(id, { calibrationId: appliedId }); // izlenebilirlik: hangi profil uygulandı
+      run.calibrationId = appliedId;
+    }
     const ex = extractFromApsProps(state.collection, rules);
     if (ex.family === 'none' || ex.rows.length === 0) {
       // asla uydurma: mesh/dumb-solid modellerde yapısal MTO verisi yoktur
@@ -97,7 +111,9 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     stages = stageSet(stages, 'size', 'done', { 'boyutlu': sized });
     stages = stageSet(stages, 'lines', 'done', { 'hat': ex.lineCount });
     const main = ex.rows.filter(r => r.scope === 'MAIN');
-    stages = stageSet(stages, 'rules', 'done', { 'satır': main.length, 'boru m': +ex.totals.pipeM.toFixed(1) });
+    stages = stageSet(stages, 'rules', 'done', appliedName
+      ? { 'satır': main.length, 'boru m': +ex.totals.pipeM.toFixed(1), 'profil': appliedName.slice(0, 24) }
+      : { 'satır': main.length, 'boru m': +ex.totals.pipeM.toFixed(1) });
     stages = stageSet(stages, 'steel', 'done', { 'profil': 0 });
     stages = stageSet(stages, 'audit', 'active');
     await updateRunMeta(id, { progress: stages });

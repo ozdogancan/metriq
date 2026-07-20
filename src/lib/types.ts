@@ -40,6 +40,7 @@ export interface RunApsJob {
   objectKey: string;
   guid?: string;
   submittedAt: string;
+  claimedUntil?: string; // ready-tamamlama kilidi: çift instance aynı işi bitirmesin
 }
 
 export interface Run {
