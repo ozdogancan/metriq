@@ -78,6 +78,10 @@ export function ModelViewerPanel({ lang, runId, focusRowIds, focusLabel, onClose
         await new Promise<void>(resolve => av.Initializer({
           env: 'AutodeskProduction',
           api: 'derivativeV2',
+          // Chrome üçüncü-taraf çerez engeli viewer'ın varsayılan cookie akışını kırar
+          // (cdn.derivative manifest → 503). Bearer header'a zorla — curl ile kanıtlı 200.
+          useCookie: false,
+          useCredentials: false,
           getAccessToken: (done: (token: string, expires: number) => void) => {
             fetch('/api/aps/viewer-token').then(r => r.json())
               .then(d => done(d.access_token, d.expires_in))
