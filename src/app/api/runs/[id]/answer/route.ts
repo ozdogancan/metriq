@@ -66,16 +66,6 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     const msg = e instanceof Error && e.message.startsWith('Cevap dosya')
       ? e.message
       : 'Cevap dosyası güvenli biçimde işlenemedi.';
-    // GEÇİCİ TEŞHİS: prod-only 500'ün gerçek sebebini yüzeye çıkar (sonra kaldırılacak)
-    return NextResponse.json({
-      error: msg,
-      _debug: {
-        name: e instanceof Error ? e.name : typeof e,
-        message: e instanceof Error ? e.message : String(e),
-        code: (e as { code?: string; details?: string })?.code,
-        details: (e as { details?: string })?.details,
-        stack: (e instanceof Error ? e.stack : '')?.split('\n').slice(0, 5).join(' | '),
-      },
-    }, { status: 400 });
+    return NextResponse.json({ error: msg }, { status: 400 });
   }
 }

@@ -4,7 +4,7 @@
 import 'server-only';
 import ExcelJS from 'exceljs';
 import { createHash, randomUUID } from 'node:crypto';
-import { inflateRawSync } from 'node:zlib';
+import { crc32, deflateRawSync, inflateRawSync } from 'node:zlib';
 import { asmeOdToNps, dnToNps } from './pipe-sizes.ts';
 import type { AnswerDiff, AnswerDiffRow, AnswerSide, AnswerValue, MtoRow, Unit } from './types';
 
@@ -113,6 +113,105 @@ function assertSafeXlsxArchive(buf: Buffer): void {
   }
 }
 
+// Makro/gömülü parçalar (vbaProject, drawing, activeX, chart, media…) hücre verisi
+// için gereksizdir ve exceljs'i Vercel çalışma zamanında YAKALANAMAZ biçimde
+// çökertebilir (gerçek vaka: Grissan .xlsm — süreç ölür, catch çalışamaz, HTML 500).
+// Çözüm: parse'tan önce arşivden bu parçaları at. Veri bayt-kopya taşınır
+// (yeniden sıkıştırma yok); yerel+merkez başlıklar temiz yeniden yazılır.
+const RISKY_XLSX_PART = /^(?:xl\/(?:vbaProject|media\/|drawings\/|charts?\/|embeddings\/|activeX\/|printerSettings\/|ctrlProps\/|threadedComments\/|pivotTables\/|pivotCache\/|calcChain\.xml$|oleObject)|customXml\/|docProps\/thumbnail)/i;
+
+export function stripRiskyXlsxParts(buf: Buffer): Buffer {
+  let eocd = -1;
+  const floor = Math.max(0, buf.length - 65_557);
+  for (let i = buf.length - 22; i >= floor; i--) {
+    if (buf.readUInt32LE(i) === EOCD) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error('Cevap dosyasının ZIP dizini okunamadı.');
+  const entries = buf.readUInt16LE(eocd + 10);
+  const centralOffset = buf.readUInt32LE(eocd + 16);
+
+  type Kept = { name: Buffer; method: number; time: number; date: number; crc: number; compressed: number; uncompressed: number; data: Buffer };
+  const kept: Kept[] = [];
+  let pos = centralOffset;
+  for (let i = 0; i < entries; i++) {
+    const method = buf.readUInt16LE(pos + 10);
+    const time = buf.readUInt16LE(pos + 12);
+    const date = buf.readUInt16LE(pos + 14);
+    const crc = buf.readUInt32LE(pos + 16);
+    const compressed = buf.readUInt32LE(pos + 20);
+    const uncompressed = buf.readUInt32LE(pos + 24);
+    const nameLen = buf.readUInt16LE(pos + 28);
+    const extraLen = buf.readUInt16LE(pos + 30);
+    const commentLen = buf.readUInt16LE(pos + 32);
+    const localOffset = buf.readUInt32LE(pos + 42);
+    const name = buf.subarray(pos + 46, pos + 46 + nameLen);
+    pos += 46 + nameLen + extraLen + commentLen;
+    const nameStr = name.toString('utf8');
+    if (RISKY_XLSX_PART.test(nameStr)) continue;
+    const localNameLen = buf.readUInt16LE(localOffset + 26);
+    const localExtraLen = buf.readUInt16LE(localOffset + 28);
+    const dataStart = localOffset + 30 + localNameLen + localExtraLen;
+    const entry: Kept = { name: Buffer.from(name), method, time, date, crc, compressed, uncompressed, data: buf.subarray(dataStart, dataStart + compressed) };
+    // Sayfa XML'i düşürülen parçalara işaret etmesin: <drawing/>, <legacyDrawing/>,
+    // <oleObjects>, <controls>, <picture/> referansları temizlenir — yoksa exceljs
+    // reconcile aşamasında eksik drawing'e uzanır ve yine çöker.
+    if (/^xl\/worksheets\/[^/]+\.xml$/i.test(nameStr)) {
+      const xml = (method === 0 ? entry.data : inflateRawSync(entry.data, { maxOutputLength: MAX_XLSX_ENTRY_BYTES + 1 })).toString('utf8');
+      const cleaned = xml
+        .replace(/<drawing\b[^>]*\/>/gi, '')
+        .replace(/<legacyDrawing(?:HF)?\b[^>]*\/>/gi, '')
+        .replace(/<picture\b[^>]*\/>/gi, '')
+        .replace(/<oleObjects\b[\s\S]*?<\/oleObjects>|<oleObjects\b[^>]*\/>/gi, '')
+        .replace(/<controls\b[\s\S]*?<\/controls>|<controls\b[^>]*\/>/gi, '');
+      if (cleaned !== xml) {
+        const raw = Buffer.from(cleaned, 'utf8');
+        entry.data = deflateRawSync(raw);
+        entry.method = 8;
+        entry.compressed = entry.data.length;
+        entry.uncompressed = raw.length;
+        entry.crc = crc32(raw) >>> 0;
+      }
+    }
+    kept.push(entry);
+  }
+
+  const chunks: Buffer[] = [];
+  const centrals: Buffer[] = [];
+  let offset = 0;
+  for (const e of kept) {
+    const lh = Buffer.alloc(30);
+    lh.writeUInt32LE(LOCAL_FILE, 0);
+    lh.writeUInt16LE(20, 4);            // version needed
+    lh.writeUInt16LE(0, 6);             // flags: descriptor yok, isimler ASCII
+    lh.writeUInt16LE(e.method, 8);
+    lh.writeUInt16LE(e.time, 10); lh.writeUInt16LE(e.date, 12);
+    lh.writeUInt32LE(e.crc, 14);
+    lh.writeUInt32LE(e.compressed, 18); lh.writeUInt32LE(e.uncompressed, 22);
+    lh.writeUInt16LE(e.name.length, 26); lh.writeUInt16LE(0, 28);
+    chunks.push(lh, e.name, e.data);
+    const ch = Buffer.alloc(46);
+    ch.writeUInt32LE(CENTRAL_FILE, 0);
+    ch.writeUInt16LE(20, 4); ch.writeUInt16LE(20, 6);
+    ch.writeUInt16LE(0, 8);
+    ch.writeUInt16LE(e.method, 10);
+    ch.writeUInt16LE(e.time, 12); ch.writeUInt16LE(e.date, 14);
+    ch.writeUInt32LE(e.crc, 16);
+    ch.writeUInt32LE(e.compressed, 20); ch.writeUInt32LE(e.uncompressed, 24);
+    ch.writeUInt16LE(e.name.length, 28);
+    ch.writeUInt32LE(offset, 42);
+    centrals.push(ch, e.name);
+    offset += 30 + e.name.length + e.data.length;
+  }
+  const centralStart = offset;
+  let centralSize = 0;
+  for (const c of centrals) centralSize += c.length;
+  const eo = Buffer.alloc(22);
+  eo.writeUInt32LE(EOCD, 0);
+  eo.writeUInt16LE(kept.length, 8); eo.writeUInt16LE(kept.length, 10);
+  eo.writeUInt32LE(centralSize, 12); eo.writeUInt32LE(centralStart, 16);
+  return Buffer.concat([...chunks, ...centrals, eo]);
+}
+
 export interface AnswerRow { code: string; s1: number | null; s2: number; qty: number; unit: Unit }
 
 // Başlık eş anlamlıları — müşteri şablonları TR/EN karışık gelebilir
@@ -201,8 +300,10 @@ function assertSafeWorkbookShape(wb: ExcelJS.Workbook): void {
 export function parseAnswerXlsx(buf: Buffer): Promise<{ rows: AnswerRow[]; sheet: string }> {
   return (async () => {
     assertSafeXlsxArchive(buf);
+    // parse ÖNCESİ makro/gömülü parçaları at — exceljs bunlara hiç dokunmasın
+    const clean = stripRiskyXlsxParts(buf);
     const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(buf as unknown as ArrayBuffer);
+    await wb.xlsx.load(clean as unknown as ArrayBuffer);
     assertSafeWorkbookShape(wb);
     let best: { sheet: string; headerRow: number; cols: Record<string, number>; score: number } | null = null;
 
