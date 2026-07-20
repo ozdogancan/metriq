@@ -45,6 +45,7 @@ export function ModelViewerPanel({ lang, runId, focusRowIds, focusLabel, onClose
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [error, setError] = useState('');
   const [focusInfo, setFocusInfo] = useState('');
+  const [attempt, setAttempt] = useState(0); // "Tekrar dene": viewer tam sıfırlanır (zehirli doc-cache temizlenir)
 
   const applyFocus = useCallback((rowIds: string[] | null) => {
     const viewer = viewerRef.current;
@@ -122,7 +123,16 @@ export function ModelViewerPanel({ lang, runId, focusRowIds, focusLabel, onClose
       viewerRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runId]);
+  }, [runId, attempt]);
+
+  function retry() {
+    // Viewer, başarısız Document'ı oturum içinde önbellekler — sıradan yeniden
+    // deneme sessizce aynı hatayı döndürür. shutdown() modül durumunu sıfırlar.
+    try { window.Autodesk?.Viewing?.shutdown?.(); } catch { /* yoksay */ }
+    viewerAssetsPromise = null;
+    setState('loading'); setError('');
+    setAttempt(a => a + 1);
+  }
 
   // odak satırı değişince (panel açıkken başka satır ikonuna basılırsa)
   useEffect(() => { if (state === 'ready') applyFocus(focusRowIds); }, [focusRowIds, state, applyFocus]);
@@ -151,8 +161,14 @@ export function ModelViewerPanel({ lang, runId, focusRowIds, focusLabel, onClose
             </div>
           )}
           {state === 'error' && (
-            <div className="absolute inset-0 flex items-center justify-center px-8 text-center font-data text-[12px] text-danger">
-              {error}
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-8 text-center">
+              <span className="font-data text-[12px] text-danger">{error}</span>
+              <button onClick={retry} className="btn !text-[12px]">↻ {tr ? 'Tekrar dene' : 'Retry'}</button>
+              <span className="max-w-md font-data text-[10.5px] text-muted">
+                {tr
+                  ? 'Sürüyorsa: tarayıcı eklentisi (reklam/gizlilik engelleyici) Autodesk isteklerini kesiyor olabilir — bu site için kapatıp yeniden dene.'
+                  : 'If it persists: a browser extension (ad/privacy blocker) may be blocking Autodesk requests — disable it for this site and retry.'}
+              </span>
             </div>
           )}
         </div>
