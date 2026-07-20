@@ -576,7 +576,7 @@ function MtoTable({ lang, rows, onEdit, onRemove, emptyMsg }: {
 // ---- cevap karşılaştırma karnesi + karar tezgâhı: müşteri Excel'i = ground truth ----
 const ANSWER_STATUS: Record<string, { tr: string; en: string; color: string; tipTr: string; tipEn: string }> = {
   missing: {
-    tr: 'bizde eksik', en: 'missing in ours', color: 'var(--color-danger)',
+    tr: 'Excel\'de var · bizde yok', en: 'in Excel only', color: 'var(--color-danger)',
     tipTr: 'Cevap Excel\'inde var, bizim metrajda yok — Cevap seçersen satır eklenir',
     tipEn: 'In the answer Excel but not in our take-off — choosing Answer adds the row',
   },
@@ -589,7 +589,7 @@ const ANSWER_STATUS: Record<string, { tr: string; en: string; color: string; tip
     tipTr: 'Miktar aynı, kod veya çap farklı', tipEn: 'Same quantity, code or size differs',
   },
   extra: {
-    tr: 'bizde fazla', en: 'extra in ours', color: 'var(--color-steel)',
+    tr: 'bizde var · Excel\'de yok', en: 'in ours only', color: 'var(--color-steel)',
     tipTr: 'Bizde var, cevap Excel\'inde yok — Cevap seçersen satır çıkarılır',
     tipEn: 'In our take-off but not in the answer — choosing Answer removes the row',
   },
@@ -904,18 +904,32 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, freshId, onApplie
                     {decidable && r.id && c === 'custom' && (
                       <tr>
                         <td colSpan={6} className="!py-2">
-                          <div className="flex flex-wrap items-center gap-2 pl-2 font-data text-[11px]">
-                            <span className="text-muted">{tr ? 'özel:' : 'custom:'}</span>
-                            <input value={d.code} onChange={e => setCustoms(p => new Map(p).set(r.id!, { ...d, code: e.target.value }))}
-                              className="w-32 rounded border border-line bg-transparent px-2 py-1 outline-none focus:border-copper/60" placeholder={tr ? 'kod' : 'code'} />
-                            <input value={d.s1} onChange={e => setCustoms(p => new Map(p).set(r.id!, { ...d, s1: e.target.value }))}
-                              className="w-14 rounded border border-line bg-transparent px-2 py-1 text-right outline-none focus:border-copper/60" placeholder="s1″" inputMode="decimal" />
-                            <input value={d.s2} onChange={e => setCustoms(p => new Map(p).set(r.id!, { ...d, s2: e.target.value }))}
-                              className="w-14 rounded border border-line bg-transparent px-2 py-1 text-right outline-none focus:border-copper/60" placeholder="s2″" inputMode="decimal" />
-                            <input value={d.qty} onChange={e => setCustoms(p => new Map(p).set(r.id!, { ...d, qty: e.target.value }))}
-                              className="w-20 rounded border border-line bg-transparent px-2 py-1 text-right outline-none focus:border-copper/60" placeholder={tr ? 'miktar' : 'qty'} inputMode="decimal" />
+                          {/* .mtable input kuralı (width:100% + şeffaf kenarlık) utility'leri ezer →
+                              editör alanları ! (important) ile stillenir + etiketli kompakt düzen */}
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 pl-2 font-data text-[11px]">
+                            <span className="font-semibold text-copper">{tr ? 'özel değer:' : 'custom value:'}</span>
+                            <label className="flex items-center gap-1.5 text-muted">
+                              {tr ? 'kod' : 'code'}
+                              <input value={d.code} onChange={e => setCustoms(p => new Map(p).set(r.id!, { ...d, code: e.target.value }))}
+                                className="!w-36 !rounded !border !border-line !bg-transparent !px-2 !py-1 text-ink outline-none focus:!border-copper/60" placeholder={tr ? 'kod' : 'code'} />
+                            </label>
+                            <label className="flex items-center gap-1.5 text-muted">
+                              s1″
+                              <input value={d.s1} onChange={e => setCustoms(p => new Map(p).set(r.id!, { ...d, s1: e.target.value }))}
+                                className="!w-16 !rounded !border !border-line !bg-transparent !px-2 !py-1 !text-right text-ink outline-none focus:!border-copper/60" placeholder="—" inputMode="decimal" />
+                            </label>
+                            <label className="flex items-center gap-1.5 text-muted">
+                              s2″
+                              <input value={d.s2} onChange={e => setCustoms(p => new Map(p).set(r.id!, { ...d, s2: e.target.value }))}
+                                className="!w-16 !rounded !border !border-line !bg-transparent !px-2 !py-1 !text-right text-ink outline-none focus:!border-copper/60" placeholder="0" inputMode="decimal" />
+                            </label>
+                            <label className="flex items-center gap-1.5 text-muted">
+                              {tr ? 'miktar' : 'qty'}
+                              <input value={d.qty} onChange={e => setCustoms(p => new Map(p).set(r.id!, { ...d, qty: e.target.value }))}
+                                className="!w-24 !rounded !border !border-line !bg-transparent !px-2 !py-1 !text-right text-ink outline-none focus:!border-copper/60" placeholder="0" inputMode="decimal" />
+                            </label>
                             <select value={d.unit} onChange={e => setCustoms(p => new Map(p).set(r.id!, { ...d, unit: e.target.value as 'M' | 'EA' }))}
-                              className="rounded border border-line bg-transparent px-2 py-1 outline-none">
+                              className="!w-auto !rounded !border !border-line !bg-transparent !px-2 !py-1 text-ink outline-none">
                               <option value="M">M</option><option value="EA">EA</option>
                             </select>
                           </div>
