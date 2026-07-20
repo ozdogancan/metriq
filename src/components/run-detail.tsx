@@ -72,6 +72,7 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
   const [answerBusy, setAnswerBusy] = useState(false);
   const [freshAnswerId, setFreshAnswerId] = useState<string | null>(null); // bu oturumda yüklenen karşılaştırma → panele kaydır
   const answerFileRef = useRef<HTMLInputElement>(null);
+  const [showFindings, setShowFindings] = useState(false); // AI bulgu listesi varsayılan kapalı
   // "modelde göster" — yalnız bulut (APS) metrajlarında; null = panel kapalı
   const [viewerFocus, setViewerFocus] = useState<{ rowIds: string[]; label: string } | null>(null);
   const canView = Boolean(run.aps?.urn);
@@ -303,47 +304,62 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
         <span className="ml-auto">{t(lang, 'net_note')}</span>
       </div>
 
-      {/* AI denetçi bulguları */}
-      {run.ai && (
-        <div className="rise rise-2 panel panel-corners px-5 py-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[12px] font-semibold uppercase tracking-wider text-copper">
-              ⛨ {tr ? 'AI Denetçi' : 'AI Auditor'}
-            </span>
-            <span className="chip font-data">{run.ai.model.replace('claude-', '')}</span>
-            <span className="chip font-data">
-              {tr ? 'karmaşıklık' : 'complexity'} {run.ai.complexity}/100 · {tierLabel(run.ai.tier, lang)}
-            </span>
-            {run.ai.findings.length === 0 && (
-              <span className="chip"><span className="chip-dot bg-mint" />{tr ? 'bulgu yok' : 'no findings'}</span>
+      {/* AI denetçi — varsayılan KAPALI özet: 15 bulguluk duvar sayfayı boğuyordu.
+          Özet + sayaç çipleri her zaman; liste tek tıkla açılır. */}
+      {run.ai && (() => {
+        const crit = run.ai!.findings.filter(f => f.severity === 'critical').length;
+        const warn = run.ai!.findings.filter(f => f.severity === 'warn').length;
+        const info = run.ai!.findings.length - crit - warn;
+        return (
+          <div className="rise rise-2 panel panel-corners px-5 py-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[12px] font-semibold uppercase tracking-wider text-copper">
+                ⛨ {tr ? 'AI Denetçi' : 'AI Auditor'}
+              </span>
+              <span className="chip font-data">{run.ai.model.replace('claude-', '')}</span>
+              {crit > 0 && <span className="chip font-data"><span className="chip-dot" style={{ background: 'var(--color-danger)' }} />{crit} {tr ? 'kritik' : 'critical'}</span>}
+              {warn > 0 && <span className="chip font-data"><span className="chip-dot" style={{ background: 'var(--color-copper)' }} />{warn} {tr ? 'uyarı' : 'warning'}</span>}
+              {info > 0 && <span className="chip font-data"><span className="chip-dot" style={{ background: 'var(--color-steel)' }} />{info} {tr ? 'not' : 'note'}</span>}
+              {run.ai.findings.length === 0 && (
+                <span className="chip"><span className="chip-dot bg-mint" />{tr ? 'bulgu yok' : 'no findings'}</span>
+              )}
+              {run.ai.findings.length > 0 && (
+                <button onClick={() => setShowFindings(v => !v)} className="btn btn-ghost ml-auto !text-[11px]">
+                  {showFindings
+                    ? (tr ? 'bulguları gizle' : 'hide findings')
+                    : `${tr ? 'bulguları göster' : 'show findings'} (${run.ai.findings.length})`}
+                </button>
+              )}
+            </div>
+            {run.ai.summary && (
+              <p className="mt-2.5 text-[13px] leading-relaxed text-muted">
+                {tr ? run.ai.summary : (run.ai.summaryEn ?? run.ai.summary)}
+              </p>
+            )}
+            {showFindings && run.ai.findings.length > 0 && (
+              <ul className="mt-3 space-y-1.5">
+                {run.ai.findings.map((f, i) => (
+                  <li key={i} className="flex items-start gap-2 text-[12.5px] leading-snug">
+                    <span className="chip-dot mt-1.5 shrink-0" style={{
+                      background: f.severity === 'critical' ? 'var(--color-danger)' : f.severity === 'warn' ? 'var(--color-copper)' : 'var(--color-steel)',
+                    }} />
+                    <span className={f.severity === 'critical' ? 'text-danger' : ''}>
+                      {tr ? f.message : (f.messageEn ?? f.message)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {showFindings && (
+              <p className="mt-2.5 font-data text-[10px] text-muted">
+                {tr
+                  ? 'AI yalnız işaretler; rakamlar deterministik motordan gelir. Bulguları kontrol edip satırları düzenleyebilirsin — düzeltmelerin sistemi eğitir.'
+                  : 'AI only flags; numbers come from the deterministic engine. Review findings and edit rows — your corrections train the system.'}
+              </p>
             )}
           </div>
-          {run.ai.summary && (
-            <p className="mt-2.5 text-[13px] leading-relaxed text-muted">
-              {tr ? run.ai.summary : (run.ai.summaryEn ?? run.ai.summary)}
-            </p>
-          )}
-          {run.ai.findings.length > 0 && (
-            <ul className="mt-3 space-y-1.5">
-              {run.ai.findings.map((f, i) => (
-                <li key={i} className="flex items-start gap-2 text-[12.5px] leading-snug">
-                  <span className="chip-dot mt-1.5 shrink-0" style={{
-                    background: f.severity === 'critical' ? 'var(--color-danger)' : f.severity === 'warn' ? 'var(--color-copper)' : 'var(--color-steel)',
-                  }} />
-                  <span className={f.severity === 'critical' ? 'text-danger' : ''}>
-                    {tr ? f.message : (f.messageEn ?? f.message)}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-          <p className="mt-2.5 font-data text-[10px] text-muted">
-            {tr
-              ? 'AI yalnız işaretler; rakamlar deterministik motordan gelir. Bulguları kontrol edip satırları düzenleyebilirsin — düzeltmelerin sistemi eğitir.'
-              : 'AI only flags; numbers come from the deterministic engine. Review findings and edit rows — your corrections train the system.'}
-          </p>
-        </div>
-      )}
+        );
+      })()}
 
       {/* sekmeler + filtreler */}
       <div className="rise rise-3 flex flex-wrap items-center gap-2">
@@ -393,26 +409,36 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
 
       <AiInsight lang={lang} runId={run.id} />
 
-      {/* manuel-düzeltme profili — cevap-tezgâhından AYRI, daha dar bir öğrenme yolu */}
-      <div className="rise rise-4 flex flex-wrap items-center gap-3 border-t border-line pt-5">
-        <input value={calName} onChange={e => setCalName(e.target.value)}
-          placeholder={`${t(lang, 'calibration')} — ${t(lang, 'name').toLowerCase()}`}
-          aria-label={t(lang, 'calibration')}
-          className="panel w-64 px-3.5 py-2.5 text-[13px] outline-none focus:border-copper/50" />
-        <button onClick={saveCalibration} className="btn">◈ {t(lang, 'save_calibration')}</button>
-        <span className="font-data text-[11px] text-muted">
-          {answer && !answer.appliedAt
-            ? (tr
-              ? 'Cevap karşılaştırması açıkken kalibrasyonu YUKARIDAKİ panelden yap — bu buton yalnız tablodaki manuel kod/hat düzeltmelerinden öğrenir.'
-              : 'While an answer comparison is open, calibrate from the panel ABOVE — this button only learns from manual code/line edits in the table.')
-            : (tr
-              ? 'Tablodaki manuel kod/hat düzeltmelerinden öğrenir; cevap Excel\'inden öğrenmek için yukarıdan cevap yükle.'
-              : 'Learns from manual code/line edits in the table; to learn from an answer Excel, upload one above.')}
-        </span>
-      </div>
+      {/* 🎓 TEK öğretme bölgesi — iki ayrı "kalibrasyon" bloğu kafa karıştırıyordu.
+          Birincil yol: serbest geri bildirim. İkincil (dar) yol: manuel düzeltme profili. */}
+      <div className="rise rise-4 border-t border-line pt-5">
+        <div className="mb-3 flex flex-wrap items-baseline gap-3">
+          <span className="text-[13px] font-bold uppercase tracking-wider text-copper">
+            🎓 {tr ? 'Sistemi öğret' : 'Teach the system'}
+          </span>
+          <span className="font-data text-[10.5px] text-muted">
+            {tr
+              ? 'Üç yol: cevap Excel\'i yükle (yukarıda) · aşağıya yorum yaz · ya da tabloda düzelt + profili kaydet'
+              : 'Three ways: upload an answer Excel (above) · write feedback below · or edit rows + save the profile'}
+          </span>
+        </div>
 
-      {/* sonuç geri bildirimi → öğrenme döngüsü */}
-      <FeedbackPanel lang={lang} runId={run.id} onApplied={refetchRun} />
+        <FeedbackPanel lang={lang} runId={run.id} onApplied={refetchRun} />
+
+        {/* dar yol: tablo düzeltmelerinden profil */}
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <input value={calName} onChange={e => setCalName(e.target.value)}
+            placeholder={`${t(lang, 'calibration')} — ${t(lang, 'name').toLowerCase()}`}
+            aria-label={t(lang, 'calibration')}
+            className="panel w-64 px-3 py-2 text-[12.5px] outline-none focus:border-copper/50" />
+          <button onClick={saveCalibration} className="btn btn-ghost !text-[12px]">◈ {t(lang, 'save_calibration')}</button>
+          <span className="font-data text-[10.5px] text-muted">
+            {answer && !answer.appliedAt
+              ? (tr ? 'Cevap açıkken kalibrasyonu yukarıdaki panelden yap.' : 'With an answer open, calibrate from the panel above.')
+              : (tr ? 'Yalnız tablodaki manuel kod/hat düzeltmelerinden öğrenir.' : 'Learns only from manual code/line edits in the table.')}
+          </span>
+        </div>
+      </div>
 
       {/* 3B model paneli */}
       {viewerFocus && canView && (

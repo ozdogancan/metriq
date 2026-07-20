@@ -121,6 +121,16 @@ async function processRun(run: Run, buf: Buffer, rules: CalibrationRules, lang: 
       ? parsed.components.filter(c => c.s1 != null).length / parsed.components.length
       : 0;
     if (apsEnabled && (!parsed || parsed.components.length === 0 || sizedRatio < 0.3)) {
+      // 💰 SERT KOTA TAVANI: bulut çevirisi tek ücretli işlemdir (0.5 token/dosya).
+      // Aylık tavan aşılırsa dosya İŞLENMEZ — Autodesk tarafında sürpriz kullanım imkânsız.
+      const cap = Number(process.env.APS_MONTHLY_TRANSLATION_CAP ?? 30);
+      const monthStart = new Date();
+      monthStart.setUTCDate(1); monthStart.setUTCHours(0, 0, 0, 0);
+      const apsThisMonth = (await listRuns())
+        .filter(r => r.aps?.submittedAt && new Date(r.aps.submittedAt) >= monthStart).length;
+      if (apsThisMonth >= cap) {
+        throw new Error(`Aylık bulut çeviri tavanına ulaşıldı (${cap} dosya ≈ ${cap * 0.5} token) — kota güvenliği için durduruldu, gelecek ay sıfırlanır.`);
+      }
       const reason = !parsed || parsed.components.length === 0
         ? 'yerel veri yok'
         : `boyutlu oran %${Math.round(sizedRatio * 100)}`;

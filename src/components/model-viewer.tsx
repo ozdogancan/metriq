@@ -89,6 +89,9 @@ export function ModelViewerPanel({ lang, runId, focusRowIds, focusLabel, onClose
           },
         }, resolve));
         if (disposed || !holderRef.current) return;
+        // TÜM derivative istekleri same-origin proxy'den geçer — kullanıcı
+        // tarayıcısındaki eklenti/çerez engelleri Autodesk CDN'ini kesemesin
+        av.endpoint.setEndpointAndApi(`${window.location.origin}/api/aps/proxy`, 'derivativeV2');
         const viewer = new av.GuiViewer3D(holderRef.current, { theme: 'dark-theme' });
         viewer.start();
         viewerRef.current = viewer;
