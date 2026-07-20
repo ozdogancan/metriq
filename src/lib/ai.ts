@@ -54,15 +54,17 @@ const AUDIT_SCHEMA = {
         properties: {
           severity: { type: 'string' as const, enum: ['info', 'warn', 'critical'] },
           message: { type: 'string' as const },
+          messageEn: { type: 'string' as const },
           rowId: { type: 'string' as const },
         },
-        required: ['severity', 'message'],
+        required: ['severity', 'message', 'messageEn'],
         additionalProperties: false,
       },
     },
     summary: { type: 'string' as const },
+    summaryEn: { type: 'string' as const },
   },
-  required: ['findings', 'summary'],
+  required: ['findings', 'summary', 'summaryEn'],
   additionalProperties: false,
 };
 
@@ -94,7 +96,8 @@ export async function runAudit(args: {
 4) Vokabüler uyumu (profil: ${vocab}): kod adları profile aykırıysa belirt.
 5) Bağlantı elemanı sağlaması: conta=${fasteners.gaskets}, cıvata seti=${fasteners.boltSets}, stub/collar=${fasteners.stubEnds} — flanşlı sistemde conta≈cıvata beklenir; ciddi sapmayı raporla.
 
-Kurallar: SADECE verilen verilerden çalış, rakam uydurma. Her bulguda mümkünse rowId ver (satırın başındaki 8 haneli kimlik). Kritik=teklifi etkiler, warn=kontrol edilmeli, info=not. EN FAZLA 15 bulgu — en önemlileri seç, her mesaj tek cümle. Bulgu yoksa boş findings + kısa olumlu özet döndür. Özet 2-3 cümle, Türkçe.
+Kurallar: SADECE verilen verilerden çalış, rakam uydurma. Her bulguda mümkünse rowId ver (satırın başındaki 8 haneli kimlik). Kritik=teklifi etkiler, warn=kontrol edilmeli, info=not. EN FAZLA 15 bulgu — en önemlileri seç, her mesaj tek cümle. Bulgu yoksa boş findings + kısa olumlu özet döndür.
+DİL: UI iki dilli — her bulguyu İKİ dilde yaz: "message"=Türkçe, "messageEn"=İngilizce (aynı içerik, çeviri). Özet de iki dilde: "summary"=Türkçe 2-3 cümle, "summaryEn"=English aynı içerik.
 
 Dosya: ${fileName} | Ana satır: ${main.length} | Bilgi satırı: ${info.length}
 MTO (id|hat|kod|çap1xçap2|miktar):
@@ -123,11 +126,11 @@ ${compact}
     console.log(`[ai] denetim yanıtı geldi: ${res.usage?.output_tokens ?? '?'} token, stop=${res.stop_reason}`);
     const text = res.content.find(b => b.type === 'text');
     if (!text || text.type !== 'text') return null;
-    const parsed = JSON.parse(text.text) as { findings: AiFinding[]; summary: string };
+    const parsed = JSON.parse(text.text) as { findings: AiFinding[]; summary: string; summaryEn?: string };
     // rowId'leri tam id'ye geri eşle
     const byPrefix = new Map(main.map(r => [r.id.slice(0, 8), r.id]));
     const findings = (parsed.findings || []).slice(0, 40).map(f => ({
-      severity: f.severity, message: f.message,
+      severity: f.severity, message: f.message, messageEn: f.messageEn,
       rowId: f.rowId ? byPrefix.get(f.rowId.slice(0, 8)) : undefined,
     }));
     return {
@@ -136,6 +139,7 @@ ${compact}
       tier: complexity.tier,
       findings,
       summary: parsed.summary || '',
+      summaryEn: parsed.summaryEn,
       createdAt: new Date().toISOString(),
     };
   } catch (e) {

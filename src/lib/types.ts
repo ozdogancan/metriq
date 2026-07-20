@@ -196,7 +196,8 @@ export const STAGE_ORDER: StageKey[] = ['upload', 'scan', 'extract', 'size', 'li
 // ---------- AI denetçi (Claude — komplexity'ye göre model) ----------
 export interface AiFinding {
   severity: 'info' | 'warn' | 'critical';
-  message: string;
+  message: string;      // Türkçe
+  messageEn?: string;   // English — UI dili EN iken gösterilir (eski kayıtlarda yok → TR'ye düşer)
   rowId?: string;
 }
 export interface AiAudit {
@@ -204,7 +205,8 @@ export interface AiAudit {
   complexity: number;         // 0-100
   tier: 'basit' | 'orta' | 'karmaşık';
   findings: AiFinding[];
-  summary: string;
+  summary: string;            // Türkçe
+  summaryEn?: string;         // English
   createdAt: string;
 }
 

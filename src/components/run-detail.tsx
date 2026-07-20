@@ -296,7 +296,11 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
               <span className="chip"><span className="chip-dot bg-mint" />{tr ? 'bulgu yok' : 'no findings'}</span>
             )}
           </div>
-          {run.ai.summary && <p className="mt-2.5 text-[13px] leading-relaxed text-muted">{run.ai.summary}</p>}
+          {run.ai.summary && (
+            <p className="mt-2.5 text-[13px] leading-relaxed text-muted">
+              {tr ? run.ai.summary : (run.ai.summaryEn ?? run.ai.summary)}
+            </p>
+          )}
           {run.ai.findings.length > 0 && (
             <ul className="mt-3 space-y-1.5">
               {run.ai.findings.map((f, i) => (
@@ -304,7 +308,9 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
                   <span className="chip-dot mt-1.5 shrink-0" style={{
                     background: f.severity === 'critical' ? 'var(--color-danger)' : f.severity === 'warn' ? 'var(--color-copper)' : 'var(--color-steel)',
                   }} />
-                  <span className={f.severity === 'critical' ? 'text-danger' : ''}>{f.message}</span>
+                  <span className={f.severity === 'critical' ? 'text-danger' : ''}>
+                    {tr ? f.message : (f.messageEn ?? f.message)}
+                  </span>
                 </li>
               ))}
             </ul>
@@ -628,8 +634,11 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, freshId, onApplie
     targetProfile?.name ?? (tr ? `${run.projectName} kalibrasyonu` : `${run.projectName} calibration`));
 
   const problems = answer.rows.filter(r => r.status !== 'match');
-  // tablo havuzu: uyum çubuğundaki duruma tıklayınca o durum filtrelenir
-  const pool = filter === 'diffs' ? problems : answer.rows.filter(r => r.status === filter);
+  // tablo havuzu: uyum çubuğundaki duruma tıklayınca o durum filtrelenir.
+  // Fark SIFIRSA (%100) varsayılan görünüm eşleşenlerdir — kullanıcı "iki tarafın
+  // değerini satır satır görmem lazım" dedi; boş tablo göstermek yanlıştı.
+  const effectiveFilter = filter === 'diffs' && problems.length === 0 ? 'match' : filter;
+  const pool = effectiveFilter === 'diffs' ? problems : answer.rows.filter(r => r.status === effectiveFilter);
   const shownRows = showAll ? pool : pool.slice(0, 12);
   const applied = Boolean(answer.appliedAt);
   const decidable = !applied && problems.length > 0 && problems.every(r => r.id);
@@ -752,7 +761,7 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, freshId, onApplie
         <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 font-data text-[10.5px]">
           {barSegments.filter(s => s.n > 0).map(s => (
             <button key={s.key} onClick={() => setFilter(s.key)}
-              className={`flex items-center gap-1.5 transition-colors ${filter === s.key ? 'text-ink' : 'text-muted hover:text-ink'}`}
+              className={`flex items-center gap-1.5 transition-colors ${effectiveFilter === s.key ? 'text-ink' : 'text-muted hover:text-ink'}`}
               title={tr ? 'Tabloda yalnız bu durumu göster' : 'Filter the table to this status'}>
               <span className="inline-block h-2 w-2 rounded-sm" style={{ background: s.color }} />
               {s.n} {s.label}
@@ -802,6 +811,20 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, freshId, onApplie
               {tr ? 'Bizimkileri koru' : 'Keep ours'}
             </button>
           </div>
+        </div>
+      )}
+
+      {/* fark yok (%100): kabul edilecek bir şey kalmadığını AÇIKÇA söyle —
+          yoksa kullanıcı "komple kabul et butonu nerede" diye arıyor */}
+      {!applied && problems.length === 0 && (
+        <div className="mt-3 rounded border px-3.5 py-2.5 font-data text-[11.5px]"
+          style={{
+            borderColor: 'color-mix(in oklab, var(--color-mint) 35%, transparent)',
+            background: 'color-mix(in oklab, var(--color-mint) 8%, transparent)',
+          }}>
+          ✓ {tr
+            ? <>Fark yok — metraj Excel cevabıyla <b>birebir eşleşiyor</b> ({answer.counts.matched} kalem). Kabul edilecek/düzeltilecek bir şey kalmadı; aşağıdaki tabloda her kalemin iki taraftaki değeri satır satır görünür.</>
+            : <>No differences — the take-off <b>matches the Excel answer exactly</b> ({answer.counts.matched} items). Nothing to accept or fix; the table below shows both sides&apos; values row by row.</>}
         </div>
       )}
 
@@ -910,7 +933,7 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, freshId, onApplie
                 {showAll ? (tr ? 'daralt' : 'collapse') : `${pool.length - 12} ${tr ? 'satır daha göster' : 'more rows'}`}
               </button>
             )}
-            {filter !== 'diffs' && (
+            {filter !== 'diffs' && problems.length > 0 && (
               <button onClick={() => setFilter('diffs')} className="btn btn-ghost !text-[11px]">
                 ← {tr ? 'tüm farklara dön' : 'back to all differences'}
               </button>
