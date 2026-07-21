@@ -21,7 +21,11 @@ export interface SteelMember { profile: string; lengthMm: number; kg: number | n
 export interface ParseResult {
   components: ParsedComponent[];
   steelMembers: SteelMember[];
-  fasteners: { gaskets: number; boltSets: number; stubEnds: number };
+  fasteners: {
+    gaskets: number; boltSets: number; stubEnds: number;
+    // boyut kırılımı (varsa): cevap listeleri contayı çap bazında sayar
+    bySize?: { gaskets: Record<string, number>; boltSets: Record<string, number>; boltPieces: number };
+  };
   stats: { blobCount: number; recordCount: number; uniqueComponents: number };
 }
 

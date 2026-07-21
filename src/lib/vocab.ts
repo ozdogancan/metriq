@@ -138,8 +138,23 @@ export function applyRules(parsed: ParseResult, rules: CalibrationRules): {
 
   if (rules.includeFasteners) {
     const f = parsed.fasteners;
-    if (f.gaskets) push('*', 'GASKET', '', null, 0, f.gaskets, 'EA', 'bağlantı başına 1', 'MAIN');
-    if (f.boltSets) push('*', 'BOLT SET', '', null, 0, f.boltSets, 'EA', '', 'MAIN');
+    // Müşteri listeleri contayı ÇAP BAZINDA sayar; boyutsuz toplam satırı
+    // karşılaştırma anahtarında (kod|çap|birim) hiçbir zaman eşleşemez.
+    // Boyut kırılımı varsa onu kullan (ENQ-237'de cevapla birebir doğrulandı).
+    const sizedGaskets = Object.entries(f.bySize?.gaskets ?? {});
+    if (sizedGaskets.length) {
+      for (const [nps, n] of sizedGaskets) {
+        push('*', 'GASKET', '', Number(nps), 0, n, 'EA', 'bağlantı başına 1', 'MAIN');
+      }
+    } else if (f.gaskets) {
+      push('*', 'GASKET', '', null, 0, f.gaskets, 'EA', 'bağlantı başına 1', 'MAIN');
+    }
+    const sizedBolts = Object.entries(f.bySize?.boltSets ?? {});
+    if (sizedBolts.length) {
+      for (const [nps, n] of sizedBolts) push('*', 'BOLT SET', '', Number(nps), 0, n, 'EA', '', 'MAIN');
+    } else if (f.boltSets) {
+      push('*', 'BOLT SET', '', null, 0, f.boltSets, 'EA', '', 'MAIN');
+    }
     if (f.stubEnds) push('*', 'STUB END', '', null, 0, f.stubEnds, 'EA', '', 'MAIN');
   }
 

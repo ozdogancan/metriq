@@ -39,6 +39,17 @@ export interface Fasteners {
   gaskets: number;
   boltSets: number;
   stubEnds: number;
+  /**
+   * Boyut kırılımlı bağlantı elemanları. Müşteri cevap listeleri contayı ÇAP
+   * BAZINDA sayar; boyutsuz tek toplam satırı hiçbir zaman eşleşemez.
+   * Kanıt (ENQ-237): buradan üretilen dağılım cevapla birebir (263 conta,
+   * 1"=97 · 2"=40 · 4"=30 · 3"=27 · 0.5"=17 · 8"=15 · 10"=13 · 6"=8 · 2.5"=5).
+   */
+  bySize?: {
+    gaskets: Record<string, number>;  // NPS inç → adet
+    boltSets: Record<string, number>;
+    boltPieces: number;               // NumberInSet toplamı (0 = veri yok)
+  };
 }
 
 export interface NwdStats {
@@ -612,14 +623,40 @@ export function parseNwd(buffer: Buffer): NwdResult {
 
   // fasteners: anchors inside P3dConnector segments
   const fasteners: Fasteners = { gaskets: 0, boltSets: 0, stubEnds: 0 };
+  // Boyut kırılımı: Plant3D connector'ı parça tanımını "Gasket, Flat, 50 ND, 10,
+  // DIN 2690, C" biçiminde taşır — buradaki "<DN> ND" gerçek nominal çaptır.
+  // Cıvata adedi ayrı bir string olarak "…NumberInSet" etiketini izler.
+  const gasketBySize: Record<string, number> = {};
+  const boltSetBySize: Record<string, number> = {};
+  let boltPieces = 0;
+  const SIZED_PART = /^(Gasket|Bolt set)\b[^,]*,[^,]*,\s*(\d+(?:\.\d+)?)\s*ND\b/i;
   for (const c of comps) {
     if (c.klass !== 'P3dConnector') continue;
-    for (const x of c.v) {
+    for (let i = 0; i < c.v.length; i++) {
+      const x = c.v[i];
       if (!x) continue;
       if (x.includes('TYPE=GASKET')) fasteners.gaskets++;
       if (x.includes('STUBEND')) fasteners.stubEnds++;
       if (x.includes('TYPE=BOLT')) fasteners.boltSets++;
+      const sized = SIZED_PART.exec(x);
+      if (sized) {
+        const nps = dnToNps(parseFloat(sized[2]));
+        if (nps != null) {
+          const bucket = /^Gasket/i.test(sized[1]) ? gasketBySize : boltSetBySize;
+          bucket[String(nps)] = (bucket[String(nps)] ?? 0) + 1;
+        }
+      }
+      if (/NumberInSet$/.test(x)) {
+        // etiketi izleyen ilk makul sayısal değer (flanş başına cıvata adedi)
+        for (let j = i + 1; j < Math.min(i + 4, c.v.length); j++) {
+          const v = Number.parseFloat(c.v[j] ?? '');
+          if (Number.isFinite(v) && v > 0 && v <= 64) { boltPieces += v; break; }
+        }
+      }
     }
+  }
+  if (Object.keys(gasketBySize).length || Object.keys(boltSetBySize).length || boltPieces) {
+    fasteners.bySize = { gaskets: gasketBySize, boltSets: boltSetBySize, boltPieces };
   }
 
   const steelMembers = extractSteel(blobRecs);
