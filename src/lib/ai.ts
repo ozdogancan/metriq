@@ -4,6 +4,7 @@
 import 'server-only';
 import Anthropic from '@anthropic-ai/sdk';
 import type { MtoRow, SteelRow, AiAudit, AiFinding } from './types';
+import { FeedbackInterpretationSchema } from './schemas';
 
 const KEY = process.env.ANTHROPIC_API_KEY;
 export const aiEnabled = Boolean(KEY);
@@ -269,7 +270,12 @@ Kurallar: SADECE geri bildirimde açıkça istenen değişiklikleri çıkar; emi
     });
     const textBlock = res.content.find(b => b.type === 'text');
     if (!textBlock || textBlock.type !== 'text') return null;
-    return JSON.parse(textBlock.text) as FeedbackInterpretation;
+    const parsed = FeedbackInterpretationSchema.safeParse(JSON.parse(textBlock.text));
+    if (!parsed.success) {
+      console.error('geri bildirim AI çıktısı domain şemasını geçemedi', parsed.error.issues[0]?.message);
+      return null;
+    }
+    return parsed.data as FeedbackInterpretation;
   } catch (e) {
     console.error('geri bildirim yorumlama hatası (fail-soft):', e);
     return null;

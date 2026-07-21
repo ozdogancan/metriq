@@ -1,8 +1,8 @@
 // Shared upload guardrails. Keep these values aligned with the Supabase bucket.
-// 🔴 200MB için Supabase Dashboard → Project Settings → Storage → "Upload file
-// size limit" değerinin de yükseltilmesi gerekir (proje-geneli tavan; API'den
-// değişmiyor). Bucket limiti global yükselince otomatik denenir (upload-url).
-export const MAX_NWD_BYTES = 200 * 1024 * 1024;
+// Canlı Supabase projesinin proje-geneli Storage tavanı 50 MB. UI/API daha
+// yüksek bir değer vaat ederse imzalı yükleme bucket katmanında geç ve belirsiz
+// biçimde kırılır; bu nedenle tek politika sabiti gerçek platform tavanıdır.
+export const MAX_NWD_BYTES = 50 * 1024 * 1024;
 // Answer workbooks currently use multipart through a Vercel Function. Keep
 // enough headroom below Vercel's 4.5 MB request-body ceiling for boundaries.
 export const MAX_ANSWER_XLSX_BYTES = 4 * 1024 * 1024;

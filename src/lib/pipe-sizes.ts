@@ -41,6 +41,17 @@ export const ASME_PIPE_SIZES = [
   { nps: 48, dn: 1200, odMm: 1219.2 },
 ] as const;
 
+/**
+ * Explicit OD aliases emitted by established non-ASME piping catalogues.
+ *
+ * These are deliberately kept separate from the ASME table: the NWD parser
+ * still requires an adjacent, agreeing DN or NPS property, so an OD alias
+ * cannot manufacture a size from an unrelated numeric value.
+ */
+export const STANDARD_PIPE_OD_ALIASES = [
+  { nps: 2.5, dn: 65, odMm: 76.1, family: 'DIN/EN' },
+] as const;
+
 const BY_NPS = new Map<number, (typeof ASME_PIPE_SIZES)[number]>(
   ASME_PIPE_SIZES.map(size => [size.nps, size]),
 );
@@ -69,6 +80,23 @@ export function asmeOdToNps(odMm: number, toleranceMm = 2.6): number | null {
   let closest: (typeof ASME_PIPE_SIZES)[number] | undefined;
   let closestDistance = Number.POSITIVE_INFINITY;
   for (const size of ASME_PIPE_SIZES) {
+    const distance = Math.abs(size.odMm - odMm);
+    if (distance < closestDistance) {
+      closest = size;
+      closestDistance = distance;
+    }
+  }
+
+  return closest && closestDistance <= toleranceMm ? closest.nps : null;
+}
+
+/** Resolve an exact catalogue OD alias without widening the ASME tolerance. */
+export function standardAliasOdToNps(odMm: number, toleranceMm = 0.6): number | null {
+  if (!Number.isFinite(odMm) || !Number.isFinite(toleranceMm) || toleranceMm < 0) return null;
+
+  let closest: (typeof STANDARD_PIPE_OD_ALIASES)[number] | undefined;
+  let closestDistance = Number.POSITIVE_INFINITY;
+  for (const size of STANDARD_PIPE_OD_ALIASES) {
     const distance = Math.abs(size.odMm - odMm);
     if (distance < closestDistance) {
       closest = size;

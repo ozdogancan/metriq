@@ -1,19 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { after } from 'next/server';
 import { randomUUID } from 'node:crypto';
+import { start } from 'workflow/api';
 import {
-  listRuns, saveRun, saveRows, saveSteel, storeFile, fetchStoredFile, deleteStoredFile,
-  beginFinalizeStoredUpload, claimStoredUpload, cancelStoredUpload, listCalibrations,
-  updateRunMeta, addNotification, resolveStaleRun,
-  isSupabase, getRun, drainStorageCleanup,
+  listRuns, saveRun, storeFile, fetchStoredFile, deleteStoredFile,
+  beginFinalizeStoredUpload, claimStoredUpload, cancelStoredUpload, getCalibration,
+  updateRunMeta, reserveStoredUpload,
+  isSupabase, getRun, drainStorageCleanup, type AccessScope,
 } from '@/lib/store';
-import { sendPush } from '@/lib/notify';
-import { parseNwd } from '@/lib/parser/nwd';
-import { apsEnabled, apsSubmit } from '@/lib/aps';
-import { applyRules, detectVocab } from '@/lib/vocab';
-import { computeComplexity, runAudit, aiEnabled } from '@/lib/ai';
-import { DEFAULT_RULES, STAGE_ORDER, type Run, type StageEvent, type VocabProfileId, type CalibrationRules } from '@/lib/types';
+import { DEFAULT_RULES, STAGE_ORDER, type Run, type StageEvent, type VocabProfileId, type CalibrationRules, type RunCalibrationSnapshot } from '@/lib/types';
 import { langFromCookie } from '@/lib/i18n';
+import { processRunWorkflow } from '@/workflows/process-run';
 import {
   MAX_PROJECT_NAME_CHARS,
   hasNwdDataMarker,
@@ -22,7 +19,7 @@ import {
   isUuid,
   storageKeyName,
 } from '@/lib/upload-policy';
-import { requireApiSession } from '@/lib/session';
+import { isApiDenial, requireApiIdentity } from '@/lib/session';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -49,218 +46,58 @@ function normalizeMeta(raw: unknown, uploadedFileName?: string): RunCreateMeta |
   return { projectName, vocab, calibrationId, fileName };
 }
 
-async function resolveRuleSelection(meta: RunCreateMeta): Promise<{
+async function resolveRuleSelection(scope: AccessScope, meta: RunCreateMeta): Promise<{
   rules: CalibrationRules;
   autoDetect: boolean;
+  snapshot: RunCalibrationSnapshot | null;
 } | null> {
   let autoDetect = meta.vocab === 'auto';
   let rules = autoDetect
     ? DEFAULT_RULES['steel-plant']
     : DEFAULT_RULES[meta.vocab as VocabProfileId];
+  let snapshot: RunCalibrationSnapshot | null = null;
   if (meta.calibrationId) {
-    const cal = (await listCalibrations()).find(c => c.id === meta.calibrationId);
-    if (!cal) return null;
+    const cal = await getCalibration(scope, meta.calibrationId);
+    if (!cal || cal.status === 'archived') return null;
     rules = cal.rules;
     autoDetect = false;
+    snapshot = {
+      id: cal.id, name: cal.name, version: cal.version ?? 1, rules: cal.rules,
+      modelFamily: cal.modelFamily, clientKey: cal.clientKey,
+    };
   }
-  return { rules, autoDetect };
+  return { rules, autoDetect, snapshot };
 }
 
 export async function GET() {
-  const denied = await requireApiSession();
-  if (denied) return denied;
-  const runs = await listRuns();
-  // 15 dk'yı aşan 'processing' run'ları hataya çevir (watchdog)
-  const resolved = await Promise.all(
-    runs.map(r => (r.status === 'processing' ? resolveStaleRun(r) : r)),
-  );
+  const identity = await requireApiIdentity();
+  if (isApiDenial(identity)) return identity;
+  const runs = await listRuns(identity);
   after(async () => {
-    try { await drainStorageCleanup(5); }
+    try { await drainStorageCleanup(identity, 5); }
     catch (error) { console.error('storage cleanup retry failed', error); }
   });
-  return NextResponse.json(resolved);
+  return NextResponse.json(runs);
 }
 
-// ---- aşama yardımcıları ----
 function freshStages(): StageEvent[] {
   return STAGE_ORDER.map(key => ({ key, status: 'pending' as const }));
 }
-function stageSet(stages: StageEvent[], key: StageEvent['key'], status: StageEvent['status'], metrics?: StageEvent['metrics']): StageEvent[] {
-  return stages.map(s => s.key === key
-    ? { ...s, status, startedAt: s.startedAt ?? new Date().toISOString(), metrics: metrics ?? s.metrics }
-    : s);
-}
-
-
-// ---- arka plan pipeline: aşama aşama gerçek metriklerle ilerleme yazar ----
-async function processRun(run: Run, buf: Buffer, rules: CalibrationRules, lang: 'tr' | 'en', autoDetect = false) {
-  let stages = run.progress ?? freshStages();
-  const push = async () => updateRunMeta(run.id, { progress: stages });
-  const t0 = Date.now();
-  try {
-    stages = stageSet(stages, 'upload', 'done', { 'MB': +(run.fileSize / 1e6).toFixed(1) });
-    stages = stageSet(stages, 'scan', 'active');
-    await push();
-
-    // Yerel Plant3D string-kazıyıcı: yapısal veri yoksa YA DA boyutsuzsa
-    // (Revit / karışık AutoCAD NWD — hiç çap çıkmıyorsa teklif verilemez)
-    // APS bulut yoluna düşer — çeviri asenkron sürer, istemci /advance ile ilerletir.
-    let parsed: ReturnType<typeof parseNwd> | null = null;
-    try {
-      parsed = parseNwd(buf);
-      if (parsed.stats.blobCount === 0 || parsed.stats.recordCount === 0) parsed = null;
-    } catch (parseError) {
-      if (!apsEnabled) throw parseError;
-      parsed = null;
-    }
-    if ((!parsed || parsed.components.length === 0) && !apsEnabled) {
-      throw new Error('Geçerli NWD veri akışı bulunamadı.');
-    }
-    // Saf Plant3D exportlarında boyutlu oran ~%100; karışık/yabancı dosyada 0'a düşer.
-    const sizedRatio = parsed && parsed.components.length
-      ? parsed.components.filter(c => c.s1 != null).length / parsed.components.length
-      : 0;
-    if (apsEnabled && (!parsed || parsed.components.length === 0 || sizedRatio < 0.3)) {
-      // 💰 SERT KOTA TAVANI: bulut çevirisi tek ücretli işlemdir (0.5 token/dosya).
-      // Aylık tavan aşılırsa dosya İŞLENMEZ — Autodesk tarafında sürpriz kullanım imkânsız.
-      const cap = Number(process.env.APS_MONTHLY_TRANSLATION_CAP ?? 30);
-      const monthStart = new Date();
-      monthStart.setUTCDate(1); monthStart.setUTCHours(0, 0, 0, 0);
-      const apsThisMonth = (await listRuns())
-        .filter(r => r.aps?.submittedAt && new Date(r.aps.submittedAt) >= monthStart).length;
-      if (apsThisMonth >= cap) {
-        throw new Error(`Aylık bulut çeviri tavanına ulaşıldı (${cap} dosya ≈ ${cap * 0.5} token) — kota güvenliği için durduruldu, gelecek ay sıfırlanır.`);
-      }
-      const reason = !parsed || parsed.components.length === 0
-        ? 'yerel veri yok'
-        : `boyutlu oran %${Math.round(sizedRatio * 100)}`;
-      stages = stageSet(stages, 'scan', 'active', { 'bulut': 'Autodesk çevirisi başlatıldı', 'sebep': reason });
-      const objectKey = `${run.id}-${storageKeyName(run.fileName)}`;
-      const { urn } = await apsSubmit(objectKey, buf);
-      await updateRunMeta(run.id, {
-        progress: stages,
-        aps: { urn, objectKey, submittedAt: new Date().toISOString() },
-      });
-      console.log(`[aps] ${run.fileName} bulut çevirisine gönderildi (${reason})`);
-      return; // tamamlama /api/runs/[id]/advance üzerinden
-    }
-    // Tip daraltma: yukarıdaki iki dal null'u imkânsız kılar (apsEnabled true→return, false→throw)
-    if (!parsed) throw new Error('Geçerli NWD veri akışı bulunamadı.');
-
-    // otomatik tesisat algılama: kural seti dosyanın kendi imzasından seçilir
-    // (hijyenik: TRU-BORE/DIN 11850 · çelik: ASME/WELD NECK/A105)
-    let appliedProfile: string | null = null;
-    if (autoDetect) {
-      const det = detectVocab(parsed);
-      run.vocab = det.vocab;
-      // Sıfır tık: algılanan tipe ait EN GÜNCEL öğrenilmiş profil otomatik uygulanır —
-      // "sonraki dosyada kurallar kendiliğinden" sözünün karşılığı. Profil yoksa varsayılan.
-      const learned = (await listCalibrations())
-        .filter(c => c.rules.vocab === det.vocab)
-        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
-      if (learned) {
-        rules = learned.rules;
-        run.calibrationId = learned.id;
-        appliedProfile = learned.name;
-      } else {
-        rules = DEFAULT_RULES[det.vocab];
-      }
-      await updateRunMeta(run.id, { vocab: det.vocab, calibrationId: run.calibrationId ?? null });
-      console.log(`[detect] tesisat=${det.vocab} (hijyenik:${det.hygienicHits} çelik:${det.steelHits}) profil=${appliedProfile ?? 'varsayılan'}`);
-    }
-
-    stages = stageSet(stages, 'scan', 'done', { 'veri akışı': parsed.stats.blobCount, 'kayıt': parsed.stats.recordCount });
-    stages = stageSet(stages, 'extract', 'done', { 'komponent': parsed.components.length });
-    const sized = parsed.components.filter(c => c.s1 != null).length;
-    stages = stageSet(stages, 'size', 'done', { 'boyutlu': sized });
-    const lines = new Set(parsed.components.map(c => c.line).filter(l => l && l !== '?'));
-    stages = stageSet(stages, 'lines', 'done', { 'hat': lines.size });
-    stages = stageSet(stages, 'rules', 'active');
-    await push();
-
-    const { rows, steel, totals } = applyRules(parsed, rules);
-    const main = rows.filter(r => r.scope === 'MAIN');
-    stages = stageSet(stages, 'rules', 'done', appliedProfile
-      ? { 'satır': main.length, 'boru m': +totals.pipeM.toFixed(1), 'profil': appliedProfile.slice(0, 24) }
-      : { 'satır': main.length, 'boru m': +totals.pipeM.toFixed(1) });
-    stages = stageSet(stages, 'steel', 'done', steel.length
-      ? { 'profil': steel.length, 'kg': +totals.steelKg.toFixed(0) }
-      : { 'profil': 0 });
-    await push();
-
-    // kayıtları erken yaz — denetim uzasa bile veri güvende
-    await saveRows(run.id, rows);
-    await saveSteel(run.id, steel);
-
-    // AI denetçi: komplexity → model seçimi (kullanıcı talebi)
-    stages = stageSet(stages, 'audit', 'active');
-    await push();
-    const complexity = computeComplexity({
-      fileMb: run.fileSize / 1e6,
-      components: parsed.components.length,
-      distinctClasses: new Set(parsed.components.map(c => c.klass)).size,
-      lines: lines.size,
-      unknownSizeRatio: main.length ? main.filter(r => r.s1 == null).length / main.length : 0,
-      steelMembers: parsed.steelMembers.length,
-      fastenerCount: parsed.fasteners.gaskets + parsed.fasteners.boltSets + parsed.fasteners.stubEnds,
-    });
-    const ai = aiEnabled
-      ? await runAudit({ rows, steel, fasteners: parsed.fasteners, vocab: rules.vocab, fileName: run.fileName, complexity, lang })
-      : null;
-    const criticals = ai?.findings.filter(f => f.severity === 'critical').length ?? 0;
-    const warns = ai?.findings.filter(f => f.severity === 'warn').length ?? 0;
-    stages = stageSet(stages, 'audit', 'done', ai
-      ? { 'seviye': ai.tier, 'kritik': criticals, 'uyarı': warns }
-      : { 'durum': 'atlandı' });
-    stages = stageSet(stages, 'finalize', 'done', { 'sn': +((Date.now() - t0) / 1000).toFixed(1) });
-
-    await updateRunMeta(run.id, { progress: stages, ai, status: 'done', totals, fasteners: parsed.fasteners });
-
-    const title = lang === 'tr' ? `Metraj hazır: ${run.projectName}` : `Take-off ready: ${run.projectName}`;
-    const body = lang === 'tr'
-      ? `${main.length} satır · boru ${totals.pipeM.toFixed(1)} m${criticals ? ` · ⚠ ${criticals} kritik bulgu` : ''}`
-      : `${main.length} rows · pipe ${totals.pipeM.toFixed(1)} m${criticals ? ` · ⚠ ${criticals} critical` : ''}`;
-    try {
-      await addNotification({
-        id: randomUUID(), kind: 'run_done', title, body,
-        url: `/runs/${run.id}`, read: false, createdAt: new Date().toISOString(),
-      });
-      await sendPush({ title, body, url: `/runs/${run.id}`, tag: `run-${run.id}` });
-    } catch (notificationError) {
-      // The take-off is already durable and complete; notification transport
-      // failure must be visible in logs without corrupting the run status.
-      console.error('completion notification failed', notificationError);
-    }
-  } catch (e) {
-    console.error('pipeline hata', e);
-    const msg = e instanceof Error ? e.message : 'işleme hatası';
-    await updateRunMeta(run.id, { status: 'error', error: msg, progress: stages });
-    const title = lang === 'tr' ? `Metraj başarısız: ${run.projectName}` : `Take-off failed: ${run.projectName}`;
-    try {
-      await addNotification({
-        id: randomUUID(), kind: 'run_error', title, body: msg,
-        url: `/runs/${run.id}`, read: false, createdAt: new Date().toISOString(),
-      });
-      await sendPush({ title, body: msg, url: `/runs/${run.id}`, tag: `run-${run.id}` });
-    } catch (notificationError) {
-      console.error('error notification failed', notificationError);
-    }
-  }
-}
 
 export async function POST(req: NextRequest) {
-  const denied = await requireApiSession();
-  if (denied) return denied;
+  const identity = await requireApiIdentity();
+  if (isApiDenial(identity)) return identity;
   let meta: RunCreateMeta | null = null;
   let runId: string = randomUUID();
   let fileStored = false;
+  let uploadReserved = false;
   let runSaved = false;
   let directUpload = false;
   const cleanupUnclaimedFile = async () => {
-    if (!fileStored || !meta) return;
+    if (!meta) return;
     try {
-      await deleteStoredFile(runId, meta.fileName);
-      await cancelStoredUpload(runId, meta.fileName);
+      if (fileStored) await deleteStoredFile(identity, runId, meta.fileName);
+      if (uploadReserved || directUpload) await cancelStoredUpload(identity, runId, meta.fileName);
     } catch (cleanupError) {
       console.error('unclaimed upload cleanup failed', cleanupError);
     } finally {
@@ -277,7 +114,7 @@ export async function POST(req: NextRequest) {
       const file = fd.get('file') as File | null;
       if (!file) return NextResponse.json({ error: 'file missing' }, { status: 400 });
       if (!isAllowedNwdSize(file.size)) {
-        return NextResponse.json({ error: 'NWD dosyası 200 MB sınırını aşıyor.' }, { status: 413 });
+        return NextResponse.json({ error: 'NWD dosyası 50 MB sınırını aşıyor.' }, { status: 413 });
       }
       const rawMeta = (() => {
         try { return JSON.parse(String(fd.get('meta') || '{}')) as unknown; }
@@ -300,23 +137,22 @@ export async function POST(req: NextRequest) {
       meta = normalized;
       runId = body.runId;
       directUpload = true;
-      if (await getRun(runId)) {
+      if (await getRun(identity, runId)) {
         return NextResponse.json({ error: 'Bu yükleme kimliği zaten kullanılmış.' }, { status: 409 });
       }
       const expectedPath = `${runId}/${storageKeyName(meta.fileName)}`;
       if (body.storagePath !== expectedPath) {
-        fileStored = true;
-        await cleanupUnclaimedFile();
         return NextResponse.json({ error: 'Yükleme yolu doğrulanamadı.' }, { status: 400 });
       }
       // The signed-upload endpoint issued this exact runId/fileName pair. From
       // here on, any rejected request must remove the unclaimed private object.
       fileStored = true;
-      buf = await fetchStoredFile(expectedPath);
+      uploadReserved = true;
+      buf = await fetchStoredFile(identity, expectedPath);
       fileSize = buf.length;
       if (!isAllowedNwdSize(fileSize)) {
         await cleanupUnclaimedFile();
-        return NextResponse.json({ error: 'NWD dosyası 200 MB sınırını aşıyor.' }, { status: 413 });
+        return NextResponse.json({ error: 'NWD dosyası 50 MB sınırını aşıyor.' }, { status: 413 });
       }
       if (!hasNwdDataMarker(buf)) {
         await cleanupUnclaimedFile();
@@ -325,19 +161,23 @@ export async function POST(req: NextRequest) {
     }
 
     // kurallar: kalibrasyon > açık profil > otomatik algılama (parse sonrası)
-    const selection = await resolveRuleSelection(meta);
+    const selection = await resolveRuleSelection(identity, meta);
     if (!selection) {
       await cleanupUnclaimedFile();
       return NextResponse.json({ error: 'Seçilen kalibrasyon artık mevcut değil.' }, { status: 400 });
     }
-    const { rules, autoDetect } = selection;
+    const { rules, autoDetect, snapshot } = selection;
 
     if (!fileStored) {
-      await storeFile(runId, meta.fileName, buf);
+      if (isSupabase) {
+        await reserveStoredUpload(identity, runId, meta.fileName);
+        uploadReserved = true;
+      }
+      await storeFile(identity, runId, meta.fileName, buf);
       fileStored = true;
     }
-    if (directUpload) {
-      const acquired = await beginFinalizeStoredUpload(runId, meta.fileName);
+    if (isSupabase) {
+      const acquired = await beginFinalizeStoredUpload(identity, runId, meta.fileName);
       if (!acquired) {
         // A cleanup worker already owns this expired reservation. It is no
         // longer safe for this request to create a run that references it.
@@ -354,6 +194,7 @@ export async function POST(req: NextRequest) {
       fileSize,
       vocab: rules.vocab,
       calibrationId: meta.calibrationId,
+      calibrationSnapshot: snapshot,
       status: 'processing',
       totals: { pipeM: 0, fittingsEa: 0, flangesEa: 0, valvesEa: 0, steelM: 0, steelKg: 0, lines: [] },
       fasteners: { gaskets: 0, boltSets: 0, stubEnds: 0 },
@@ -361,19 +202,40 @@ export async function POST(req: NextRequest) {
       ai: null,
       createdAt: new Date().toISOString(),
     };
-    await saveRun(run);
+    await saveRun(identity, run);
     runSaved = true;
-    try { if (directUpload) await claimStoredUpload(runId, meta.fileName); }
+    try {
+      if (isSupabase) {
+        await claimStoredUpload(identity, runId, meta.fileName);
+        uploadReserved = false;
+      }
+    }
     catch (claimError) {
       // The sweeper checks for a live run before deleting, so a failed ack is
       // safe and will reconcile without touching the owned source object.
       console.error('upload reservation acknowledgement deferred', claimError);
     }
 
-    // yanıttan SONRA işle — istemci /runs/[id]'de canlı pipeline'ı izler
-    after(() => processRun(run, buf, rules, lang, autoDetect));
+    // Dayanıklı workflow kaynak dosyayı private storage'dan kendi adımında alır;
+    // tarayıcı kapanması, deploy veya function restart işi durdurmaz.
+    let workflowRunId: string;
+    try {
+      const workflowRun = await start(processRunWorkflow, [{
+        scope: { tenantKey: identity.tenantKey, userKey: identity.userKey },
+        runId,
+        lang,
+        autoDetect,
+      }]);
+      workflowRunId = workflowRun.runId;
+    } catch (workflowError) {
+      await updateRunMeta(identity, runId, {
+        status: 'error',
+        error: 'Dayanıklı iş akışı başlatılamadı; dosyayı yeniden yükleyin.',
+      });
+      throw workflowError;
+    }
 
-    return NextResponse.json({ id: runId, status: 'processing' });
+    return NextResponse.json({ id: runId, status: 'processing', workflowRunId });
   } catch (e) {
     console.error('run create failed', e);
     if (!runSaved) await cleanupUnclaimedFile();

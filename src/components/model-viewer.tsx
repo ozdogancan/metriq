@@ -92,7 +92,7 @@ export function ModelViewerPanel({ lang, runId, open, focusRowIds, focusLabel, o
       : (useMode === 'isolate' ? 'parts isolated' : 'parts highlighted in context')}`);
   }, [tr]);
 
-  // kurulum: script + token + urn + model — panel İLK açıldığında bir kez
+  // kurulum: script + run'a bağlı proxy + urn + model — panel İLK açıldığında bir kez
   useEffect(() => {
     let disposed = false;
     (async () => {
@@ -104,21 +104,20 @@ export function ModelViewerPanel({ lang, runId, open, focusRowIds, focusLabel, o
         if (disposed) return;
         mapRef.current = om.map ?? {};
         const av = window.Autodesk!.Viewing;
+        const proxyEndpoint = `${window.location.origin}/api/aps/proxy/${encodeURIComponent(runId)}`;
         await new Promise<void>(resolve => av.Initializer({
           env: 'AutodeskProduction',
           api: 'derivativeV2',
-          // Chrome üçüncü-taraf çerez engeli viewer'ın varsayılan cookie akışını kırar
+          // Token tarayıcıya hiç verilmez. Viewer'ın tüm model istekleri bu
+          // tenant/run kontrollü same-origin proxy üzerinden yetkilendirilir.
+          shouldInitializeAuth: false,
+          endpoint: proxyEndpoint,
           useCookie: false,
           useCredentials: false,
-          getAccessToken: (done: (token: string, expires: number) => void) => {
-            fetch('/api/aps/viewer-token').then(r => r.json())
-              .then(d => done(d.access_token, d.expires_in))
-              .catch(() => done('', 0));
-          },
         }, resolve));
         if (disposed || !holderRef.current) return;
         // TÜM derivative istekleri same-origin proxy'den — eklenti/çerez engelleri kesemez
-        av.endpoint.setEndpointAndApi(`${window.location.origin}/api/aps/proxy`, 'derivativeV2');
+        av.endpoint.setEndpointAndApi(proxyEndpoint, 'derivativeV2');
         const viewer = new av.GuiViewer3D(holderRef.current, { theme: 'dark-theme' });
         viewer.start();
         viewerRef.current = viewer;

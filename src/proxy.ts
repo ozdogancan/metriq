@@ -11,6 +11,7 @@ function contentSecurityPolicy(nonce: string): string {
     const url = new URL(process.env.SUPABASE_URL || '');
     if (url.protocol === 'https:') supabaseOrigin = url.origin;
   } catch { /* Supabase is optional in local development. */ }
+  const apsViewerOrigin = 'https://developer.api.autodesk.com';
   return [
     "default-src 'self'",
     "base-uri 'self'",
@@ -18,9 +19,9 @@ function contentSecurityPolicy(nonce: string): string {
     "frame-ancestors 'none'",
     "object-src 'none'",
     `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${isDev ? " 'unsafe-eval'" : ''}`,
-    "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: blob:",
-    "font-src 'self' data:",
+    `style-src 'self' 'unsafe-inline' ${apsViewerOrigin}`,
+    `img-src 'self' data: blob: ${apsViewerOrigin}`,
+    `font-src 'self' data: ${apsViewerOrigin}`,
     `connect-src 'self'${supabaseOrigin ? ` ${supabaseOrigin}` : ''}${isDev ? ' ws:' : ''}`,
     "worker-src 'self' blob:",
     "manifest-src 'self'",
@@ -102,6 +103,6 @@ export async function proxy(req: NextRequest) {
 export const config = {
   // statikler, login API'si ve marka varlıkları hariç her şey korumalı
   matcher: [
-    '/((?!_next/|api/auth/login|favicon\\.ico|icon\\.png|apple-icon\\.png|opengraph-image|logo\\.png|login-hero\\.jpg|robots\\.txt).*)',
+    '/((?!_next/|\\.well-known/workflow/|api/auth/login|favicon\\.ico|icon\\.png|apple-icon\\.png|opengraph-image|logo\\.png|login-hero\\.jpg|robots\\.txt).*)',
   ],
 };

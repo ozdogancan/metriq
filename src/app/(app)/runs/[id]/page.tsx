@@ -1,14 +1,17 @@
 import { cookies } from 'next/headers';
 import Link from 'next/link';
-import { notFound } from 'next/navigation';
+import { notFound, redirect } from 'next/navigation';
 import { getRun, getRows, getSteel, listCalibrations } from '@/lib/store';
 import { langFromCookie } from '@/lib/i18n';
 import { RunDetail } from '@/components/run-detail';
 import { ProcessingLive } from '@/components/processing-live';
+import { getSessionIdentity } from '@/lib/session';
 
 export default async function RunPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const run = await getRun(id);
+  const scope = await getSessionIdentity();
+  if (!scope) redirect('/login');
+  const run = await getRun(scope, id);
   if (!run) notFound();
   const store = await cookies();
   const lang = langFromCookie(store.get('lang')?.value);
@@ -44,6 +47,8 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
     );
   }
 
-  const [rows, steel, cals] = await Promise.all([getRows(id), getSteel(id), listCalibrations()]);
+  const [rows, steel, cals] = await Promise.all([
+    getRows(scope, id), getSteel(scope, id), listCalibrations(scope),
+  ]);
   return <RunDetail lang={lang} run={run} initialRows={rows} steel={steel} calibrations={cals} />;
 }

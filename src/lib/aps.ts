@@ -1,7 +1,7 @@
 // Metriq — Autodesk Platform Services istemcisi (Model Derivative).
 // Plant3D-olmayan NWD'ler (Revit MEP vb.) için bulut çıkarım yolu: string-kazıma
 // bu dosyalarda boru uzunluğuna ULAŞAMAZ (binary parametre); APS temiz property döner.
-// Maliyet: NWD çevirisi 0.5 token/dosya — yalnız yerel parser 0 komponent verdiğinde kullanılır.
+// Bulut çevirisi yalnız yerel yapısal kanıt yetersiz kaldığında kullanılır.
 import 'server-only';
 import { Readable } from 'node:stream';
 // stream-json v1 = CJS; named-export tespiti güvenilmez → default-import interop
@@ -47,8 +47,8 @@ async function authed(path: string, init: RequestInit = {}): Promise<Response> {
   });
 }
 
-// Viewer için DAR kapsamlı token (yalnız viewables:read) — istemciye bu verilir,
-// bucket/translate yetkisi taşımaz. Ayrı cache: ana token'la kapsam karışmasın.
+// Viewer proxy için dar kapsamlı token (yalnız viewables:read). Token tarayıcıya
+// verilmez; ayrı cache ana upload/translate token'ıyla kapsam karışmasını önler.
 let cachedViewerToken: { value: string; exp: number } | null = null;
 export async function viewerToken(): Promise<{ access_token: string; expires_in: number }> {
   if (cachedViewerToken && Date.now() < cachedViewerToken.exp - 120_000) {
@@ -69,7 +69,7 @@ export async function viewerToken(): Promise<{ access_token: string; expires_in:
 }
 
 // Çeviri işini yeniden kuyruğa al (x-ads-force) — Autodesk motoru bazen geçici
-// çöker (-777 InternalFailure); tek retry gerçek vakada (ENQ-129, 124MB) kurtardı.
+// InternalFailure verir; yalnız bu açık retry yolu zorlanmış çeviri başlatır.
 export async function apsRetryTranslate(urn: string): Promise<boolean> {
   const job = await authed('/modelderivative/v2/designdata/job', {
     method: 'POST',
@@ -108,7 +108,9 @@ export async function apsSubmit(objectKey: string, buf: Buffer): Promise<{ urn: 
   const urn = toUrn(done.objectId);
   const job = await authed('/modelderivative/v2/designdata/job', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-ads-force': 'true' },
+    // Aynı durable adım ağ kesintisi yüzünden tekrar çalışırsa aynı URN'i
+    // yeniden ücretli çevirmeye zorlama. Gerçek retry ayrı fonksiyonda force=true.
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ input: { urn }, output: { formats: [{ type: 'svf', views: ['3d'] }] } }),
   });
   if (!job.ok) throw new Error('APS translate job: ' + (await job.text()).slice(0, 150));
@@ -144,7 +146,7 @@ export type ApsPhase =
   | { phase: 'extracting'; guid: string }
   | { phase: 'ready'; guid: string; collection: unknown[]; totalCount: number };
 
-// Devasa property setleri (ENQ-223: 285k obje ≈ 460MB JSON) tek string olarak
+// Devasa property setleri (doğrulanmış örnek: 285k obje ≈ 460MB JSON) tek string olarak
 // parse edilemez (OOM). Çözüm: gövdeyi STREAM'le, objeleri daha akış sırasında
 // aile filtresinden geçir (Revit boru kategorileri / Plant3D ACPP / Insert) ve
 // yalnız gerekli property gruplarını tut — bellek, tutulan alt-kümeyle sınırlı
@@ -156,11 +158,17 @@ const P3D_TYPES = new Set(['ACPPPIPE', 'ACPPPIPEINLINEASSET', 'ACPPCONNECTOR', '
 // ALAN-düzeyi beyaz liste: grup-bazlı inceltme yetmiyor (Revit gruplarının içi
 // şişkin — 46k obje ~500MB tutuyordu). Çıkarımın okuduğu alanlar dışında her şey
 // akış sırasında atılır → aynı 46k obje ~40MB.
-const EL_FIELDS = ['Id', 'Category', 'Size', 'Overall Size', 'Length', 'System Name', 'System Abbreviation'];
+const EL_FIELDS = ['Id', 'GlobalId', 'Category', 'Size', 'Overall Size', 'Length', 'System Name', 'System Abbreviation'];
 const CU_FIELDS = ['Description BOM', 'Vic_Do Not Schedule', 'Vic_Area_PT'];
-const IT_FIELDS = ['Type', 'Source File'];
+const IT_FIELDS = ['Type', 'Source File', 'Name', 'GUID'];
 const AC_FIELDS = new Set(['Class', 'Size', 'Length', 'Spec', 'ShortDescription', 'Long Description']);
 const AC_DYNAMIC = /^(?:Port\d_NominalDiameter|Fastener\d_(?:Class Name|Size))$/;
+const PROJECT_FIELDS = ['Part Number'];
+const BASE_QUANTITY_FIELDS = ['GlobalId', 'Length', 'NetWeight'];
+const TEKLA_QUANTITY_FIELDS = ['GlobalId', 'Length', 'Weight'];
+const NAMED_COMPONENT = /\b(?:PIPE|TUBE|ELBOW|BEND|TEE|REDUCER|FLANGE|VALVE|GASKET|BOLT|COLLAR|COUPLING|CAP|STRAINER)\b/i;
+const STANDARD_DN = /\bDN\s*\d{1,4}\b/i;
+const STEEL_SECTION = /\b(?:UB|UC|PFC|RHS|SHS|CHS|RSA|EA|UA|FLT|PLT|FBAR|SBAR|RBAR)\s*-?\s*\d/i;
 
 function slimGroup(src: Record<string, string> | undefined, fields: string[]): Record<string, string> | undefined {
   if (!src) return undefined;
@@ -194,9 +202,20 @@ function streamCollection(res: Response): Promise<{ collection: SlimObj[]; total
       const p = value?.properties as Record<string, Record<string, string>> | undefined;
       const cat = p?.Element?.Category;
       const typ = p?.Item?.Type;
+      const itemName = String(p?.Item?.Name ?? value.name ?? '');
+      const sourceFile = String(p?.Item?.['Source File'] ?? '');
+      const partNumber = String(p?.Project?.['Part Number'] ?? '');
       const isRevit = Boolean(p?.Element?.Id && cat && REVIT_PIPING.has(cat));
-      const isP3d = Boolean(typ && P3D_TYPES.has(typ));
-      if (!isRevit && !isP3d) return;
+      const isP3d = Boolean(
+        typ && (typ !== 'Insert' ? P3D_TYPES.has(typ) : Boolean(p?.AutoCAD)),
+      );
+      const isNamedInstance = typ === 'Instance' && NAMED_COMPONENT.test(itemName) && STANDARD_DN.test(itemName);
+      const isInventorSteel = typ === 'Group' && /\.(?:iam|ipt)$/i.test(sourceFile)
+        && STEEL_SECTION.test(`${partNumber} ${itemName}`);
+      const isIfcTekla = /^Ifc(?:Beam|Column|Member):/i.test(String(typ ?? ''));
+      const isGenericCad = typ === 'Insert' && Boolean(p?.['AutoCAD Geometry'])
+        && !p?.AutoCAD && NAMED_COMPONENT.test(itemName) && STANDARD_DN.test(itemName);
+      if (!isRevit && !isP3d && !isNamedInstance && !isInventorSteel && !isIfcTekla && !isGenericCad) return;
       if (kept.length >= MAX_KEPT_OBJECTS) {
         pipeline.destroy(new Error(`Model yapısal obje tavanını aşıyor (${MAX_KEPT_OBJECTS})`));
         return;
@@ -206,6 +225,9 @@ function streamCollection(res: Response): Promise<{ collection: SlimObj[]; total
       const cu = slimGroup(p?.Custom, CU_FIELDS);
       const it = slimGroup(p?.Item, IT_FIELDS);
       const ac = slimAutoCad(p?.AutoCAD);
+      const project = slimGroup(p?.Project, PROJECT_FIELDS);
+      const baseQuantities = slimGroup(p?.BaseQuantities, BASE_QUANTITY_FIELDS);
+      const teklaQuantities = slimGroup(p?.['Tekla Quantity'], TEKLA_QUANTITY_FIELDS);
       kept.push({
         objectid: value.objectid,
         name: value.name,
@@ -214,6 +236,10 @@ function streamCollection(res: Response): Promise<{ collection: SlimObj[]; total
           ...(cu ? { Custom: cu } : {}),
           ...(it ? { Item: it } : {}),
           ...(ac ? { AutoCAD: ac } : {}),
+          ...(project ? { Project: project } : {}),
+          ...(baseQuantities ? { BaseQuantities: baseQuantities } : {}),
+          ...(teklaQuantities ? { 'Tekla Quantity': teklaQuantities } : {}),
+          ...(p?.['AutoCAD Geometry'] ? { 'AutoCAD Geometry': { present: 'true' } } : {}),
         },
       });
     });
@@ -225,20 +251,18 @@ function streamCollection(res: Response): Promise<{ collection: SlimObj[]; total
 // Çeviri/çıkarım durumunu İLERLET — hızlı döner (Vercel 300sn sınırına uygun,
 // istemci ProcessingLive periyodik çağırır). 'ready' geldiğinde collection tam listedir.
 export async function apsAdvance(urn: string, knownGuid?: string): Promise<ApsPhase> {
-  const m = await (await authed(`/modelderivative/v2/designdata/${urn}/manifest`)).json();
-  if (m.status === 'failed' || m.status === 'timeout') {
-    const msg = m.derivatives?.flatMap((d: { messages?: { message?: string }[] }) => d.messages ?? [])
-      .map((x: { message?: string }) => x.message).filter(Boolean).join('; ');
-    return { phase: 'failed', message: (msg || 'Autodesk çevirisi başarısız').slice(0, 300) };
-  }
-  if (m.status !== 'success') return { phase: 'translating', progress: String(m.progress ?? '') };
+  const manifest = await apsManifestPhase(urn, knownGuid);
+  if (manifest.phase !== 'ready') return manifest;
+  return apsFetchProperties(urn, manifest.guid);
+}
 
-  let guid = knownGuid;
-  if (!guid) {
-    const meta = await (await authed(`/modelderivative/v2/designdata/${urn}/metadata`)).json();
-    guid = meta.data?.metadata?.find((v: { role: string }) => v.role === '3d')?.guid ?? meta.data?.metadata?.[0]?.guid;
-    if (!guid) return { phase: 'failed', message: '3D görünüm bulunamadı' };
-  }
+// Ağır property akışı ayrı tutulur: çağıran önce DB claim alarak yüzlerce MB'lık
+// aynı koleksiyonun iki serverless instance tarafından paralel indirilmesini önler.
+export async function apsFetchProperties(urn: string, guid: string): Promise<
+  | { phase: 'failed'; message: string }
+  | { phase: 'extracting'; guid: string }
+  | { phase: 'ready'; guid: string; collection: unknown[]; totalCount: number }
+> {
   // property DB büyük modelde dakikalar sürebilir: 202 = hazırlanıyor
   const pr = await authed(`/modelderivative/v2/designdata/${urn}/metadata/${guid}/properties?forceget=true`);
   if (pr.status === 202) return { phase: 'extracting', guid };

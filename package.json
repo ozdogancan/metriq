@@ -8,15 +8,22 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "npm run test:pipe-sizes && npm run test:answer && npm run test:parser-guards && npm run test:upload-policy && npm run test:i18n",
+    "test": "npm run test:pipe-sizes && npm run test:answer && npm run test:parser-guards && npm run test:aps-extract && npm run test:aps-viewer-policy && npm run test:calibration && npm run test:auth && npm run test:upload-policy && npm run test:i18n",
     "test:pipe-sizes": "node scripts/check-pipe-sizes.mjs",
     "test:answer": "node --conditions=react-server scripts/check-answer-compare.mjs",
     "test:parser-guards": "node scripts/check-parser-guards.mjs",
+    "test:aps-extract": "node --experimental-strip-types scripts/check-aps-extract.mjs",
+    "test:aps-viewer-policy": "node --experimental-strip-types scripts/check-aps-viewer-policy.mjs",
+    "test:calibration": "node --conditions=react-server scripts/check-calibration-learning.mjs",
+    "test:auth": "node --experimental-strip-types --conditions=react-server scripts/check-auth.mjs",
     "test:upload-policy": "node scripts/check-upload-policy.mjs",
-    "test:i18n": "node scripts/check-i18n.mjs"
+    "test:i18n": "node scripts/check-i18n.mjs",
+    "corpus:replay": "node --max-old-space-size=4096 --conditions=react-server scripts/replay-metriq-corpus.mjs",
+    "corpus:gate": "node --max-old-space-size=4096 --conditions=react-server scripts/replay-metriq-corpus.mjs --gate"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.110.0",
+    "@e965/xlsx": "0.20.3",
     "@supabase/supabase-js": "^2.110.2",
     "@tanstack/react-table": "^8.21.3",
     "@tanstack/react-virtual": "^3.14.5",
@@ -29,6 +36,7 @@
     "sonner": "^2.0.7",
     "stream-json": "^1.9.1",
     "web-push": "^3.6.7",
+    "workflow": "4.6.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

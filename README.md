@@ -34,7 +34,7 @@ Drift kuralı: dokümanlardaki alan/dosya adları koddan (`src/lib/types.ts`) bi
 ## Kurulum (5 dakika)
 1. **Supabase** → yeni proje aç → CLI ile projeyi bağlayıp `supabase db push` çalıştır (yerel temiz kurulum doğrulaması: `supabase db reset`) → Storage'da **private** `models` bucket'ı oluştur. Kayıtlı şemanın kanonik kaynağı tarih sıralı `supabase/migrations/` dizinidir; `supabase/migration.sql` yalnız eski/manual başlangıçlar için tutulur ve tek başına yeterli değildir.
 2. `.env.local` (bkz. `.env.example`): `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_BUCKET=models`.
-   `models` bucket private olmalı; `application/octet-stream` dışında MIME kabul etmemeli ve dosya limiti 50 MB olmalı.
+   `models` bucket private olmalı; `application/octet-stream` dışında MIME kabul etmemeli ve dosya limiti uygulamayla aynı şekilde 50 MB olmalı. Daha yüksek bir sınır ancak Supabase proje-geneli Storage tavanı da yükseltildikten sonra `MAX_NWD_BYTES` ile birlikte açılmalıdır.
 3. `npm i && npm run dev` — env yoksa **yerel modda** çalışır (`.data/` klasörü; Vercel'de kalıcı değildir).
 
 ## Deploy

@@ -10,7 +10,7 @@ import {
 } from '@tanstack/react-table';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { t, type Lang } from '@/lib/i18n';
-import type { AnswerDiff, AnswerDiffRow, AnswerRowStatus, Calibration, MtoRow, Run, SteelRow } from '@/lib/types';
+import type { AnswerDiff, AnswerDiffRow, AnswerRowStatus, Calibration, ItemCorrectionRule, MtoRow, Run, SteelRow } from '@/lib/types';
 import { ModelViewerPanel } from '@/components/model-viewer';
 import { MAX_ANSWER_XLSX_BYTES } from '@/lib/upload-policy';
 
@@ -62,6 +62,7 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
 }) {
   const router = useRouter();
   const [rows, setRows] = useState(initialRows);
+  const [rowRevision, setRowRevision] = useState(run.rowRevision ?? 0);
   const [tab, setTab] = useState<Tab>('rows');
   const [lineFilter, setLineFilter] = useState('');
   const [q, setQ] = useState('');
@@ -125,6 +126,10 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
   }
 
   const tr = lang === 'tr';
+  const extraction = run.analysis ?? run.aps?.analysis;
+  const answerValidated = Boolean(answer
+    && answer.accuracy >= (answer.targetAccuracy ?? 90));
+  const exportAllowed = extraction?.releaseEligible === true || answerValidated;
 
   // geri bildirim uygulandıktan sonra: satırları/karneyi sunucudan tazele
   async function refetchRun() {
@@ -134,6 +139,7 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
       const d = await r.json();
       if (Array.isArray(d.rows)) setRows(d.rows);
       setAnswer(d.run?.answer ?? null);
+      if (Number.isInteger(d.run?.rowRevision)) setRowRevision(d.run.rowRevision);
       setDirty(false);
       router.refresh();
     } catch { /* sıradaki etkileşimde toparlanır */ }
@@ -184,13 +190,16 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
     try {
       const res = await fetch(`/api/runs/${run.id}`, {
         method: 'PATCH', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ rows }),
+        body: JSON.stringify({ rows, expectedRowRevision: rowRevision }),
       });
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
         throw new Error(d.error || `HTTP ${res.status}`);
       }
+      const data = await res.json();
+      if (Number.isInteger(data.rowRevision)) setRowRevision(data.rowRevision);
       setSaving('saved'); setDirty(false);
+      router.refresh();
       toast.success(tr ? 'Düzenlemeler kaydedildi' : 'Edits saved');
       return true;
     } catch (e) {
@@ -227,6 +236,12 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
 
   // kirli durumda Excel indirme eski rakamları verir — önce kaydet, sonra indir
   async function downloadExcel() {
+    if (!exportAllowed) {
+      toast.error(tr
+        ? 'Bu model ailesi bağımsız %90 doğruluk kapısını henüz geçmedi. Cevap Excel’iyle hedefe ulaşmadan teklif Excel’i açılamaz.'
+        : 'This model family has not yet cleared the independent 90% accuracy gate. Validate it with an answer workbook before exporting a quote.');
+      return;
+    }
     if (dirty) {
       const ok = await save();
       if (!ok) return;
@@ -242,12 +257,41 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
     }
     const base = calibrations.find(c => c.id === run.calibrationId);
     const name = calName.trim() || base?.name || (tr ? `${run.projectName} kalibrasyonu` : `${run.projectName} calibration`);
-    // kod düzenlemelerinden öğren: orijinal kod → yeni kod eşlemeleri
-    const renames: Record<string, string> = { ...(base?.rules.codeRenames ?? {}) };
+    // Kod düzeltmesini bütün müşteri sözlüğüne tek örnekle yayma. Tam satır
+    // imzasından aday/aktif kural üret; geniş kural ikinci bağımsız modeli bekler.
+    const itemCorrections: ItemCorrectionRule[] = (base?.rules.itemCorrections ?? []).map(rule => ({
+      ...rule, match: { ...rule.match }, set: { ...rule.set },
+      evidenceRunIds: [...(rule.evidenceRunIds ?? [])],
+    }));
     const byId = new Map(initialRows.map(r => [r.id, r]));
+    let learnedItemRules = 0;
     for (const r of rows) {
       const orig = byId.get(r.id);
-      if (orig && r.edited && orig.code && r.code && orig.code !== r.code) renames[orig.code] = r.code;
+      if (!orig || !r.edited || !orig.code || !r.code || orig.code === r.code) continue;
+      const match: ItemCorrectionRule['match'] = {
+        code: orig.code, s1: orig.s1, s2: orig.s2, unit: orig.unit,
+        ...(orig.line && orig.line !== '?' && orig.line !== '*' ? { line: orig.line } : {}),
+        ...(orig.sub ? { sub: orig.sub } : {}),
+      };
+      const set: ItemCorrectionRule['set'] = { code: r.code };
+      const existing = itemCorrections.find(rule => JSON.stringify(rule.match) === JSON.stringify(match)
+        && JSON.stringify(rule.set) === JSON.stringify(set));
+      if (existing) {
+        const evidence = new Set(existing.evidenceRunIds ?? []);
+        evidence.add(run.id);
+        existing.evidenceRunIds = [...evidence];
+        existing.evidenceCount = Math.max(existing.evidenceCount, evidence.size);
+        existing.minEvidence ??= (match.line || match.sub) ? 1 : 2;
+        if (existing.status !== 'rejected' && existing.evidenceCount >= existing.minEvidence) existing.status = 'active';
+      } else {
+        const minEvidence = (match.line || match.sub) ? 1 : 2;
+        itemCorrections.push({
+          id: crypto.randomUUID(), match, set, source: 'custom', evidenceCount: 1,
+          evidenceRunIds: [run.id], minEvidence,
+          status: minEvidence === 1 ? 'active' : 'candidate',
+        });
+        learnedItemRules++;
+      }
     }
     // hat kapsamından öğren: tüm ana satırları silinen hatlar → kapsam-dışı kuralı
     const mainBefore = new Set(initialRows.filter(r => r.scope === 'MAIN').map(r => r.line));
@@ -255,12 +299,20 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
     const removedLines = [...mainBefore].filter(l => !mainNow.has(l) && l !== '*' && l !== '?');
     const excludeLines = [...new Set([...(base?.rules.excludeLines ?? []), ...removedLines])];
     try {
-      const rules = { ...(base?.rules ?? defaultRulesFor(run)), codeRenames: renames, excludeLines };
+      const rules = {
+        ...(base?.rules ?? defaultRulesFor(run)),
+        codeRenames: { ...(base?.rules.codeRenames ?? {}) },
+        itemCorrections,
+        excludeLines,
+      };
       const res = await fetch('/api/calibrations', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           id: base?.id, expectedVersion: base?.version ?? 0, name, rules,
           learnedFrom: [...new Set([...(base?.learnedFrom ?? []), run.id])],
+          modelFamily: base?.modelFamily ?? (run.analysis?.family && run.analysis.family !== 'plant3d-local' ? 'aps' : 'plant3d-local'),
+          clientKey: base?.clientKey ?? 'default',
+          status: base?.status === 'draft' ? 'draft' : 'active',
         }),
       });
       if (!res.ok) {
@@ -273,7 +325,7 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
         body: JSON.stringify({ events: [{ kind: 'calibration_saved', before: base?.rules ?? null, after: rules }] }),
       }).catch(() => {});
       setCalName('');
-      const learned = Object.keys(renames).length - Object.keys(base?.rules.codeRenames ?? {}).length;
+      const learned = learnedItemRules;
       const learnedLines = removedLines.length;
       const parts: string[] = [];
       if (learned > 0) parts.push(tr ? `${learned} kod eşlemesi` : `${learned} code mapping(s)`);
@@ -332,20 +384,89 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
             title={tr ? 'Müşterinin cevap Excel\'ini yükle — sonuçla karşılaştırılır' : 'Upload the client\'s answer Excel — compared against the result'}>
             {answerBusy ? (tr ? 'Karşılaştırılıyor…' : 'Comparing…') : (tr ? '⇪ Cevapla karşılaştır' : '⇪ Compare with answer')}
           </button>
-          <input ref={answerFileRef} type="file" accept=".xlsx,.xlsm" hidden
+          <input ref={answerFileRef} type="file" accept=".xlsx,.xlsm,.xls" hidden
             onChange={e => { const f = e.target.files?.[0]; if (f) uploadAnswer(f); e.target.value = ''; }} />
-          <button onClick={downloadExcel} disabled={saving === 'saving'} className="btn btn-primary">
-            ⤓ {t(lang, 'download_excel')}{dirty ? ' *' : ''}
+          <button onClick={downloadExcel} disabled={saving === 'saving' || !exportAllowed} className="btn btn-primary"
+            title={!exportAllowed
+              ? (tr ? 'Doğruluk kapısı: cevap Excel’iyle doğrulama gerekli' : 'Accuracy gate: answer validation required')
+              : undefined}>
+            {exportAllowed ? '⤓' : '⛔'} {t(lang, 'download_excel')}{dirty ? ' *' : ''}
           </button>
         </div>
       </div>
 
+      {extraction && (
+        <div className="rise panel panel-corners px-4 py-3"
+          style={{ borderColor: extraction.releaseEligible || answerValidated
+            ? 'color-mix(in oklab, var(--color-mint) 35%, var(--color-line))'
+            : 'color-mix(in oklab, var(--color-danger) 45%, var(--color-line))' }}>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">
+              {tr ? 'Model çıkarım güveni' : 'Model extraction confidence'}
+            </span>
+            <span className="num text-[16px] font-bold" style={{ color: extraction.releaseEligible ? 'var(--color-mint)' : 'var(--color-copper-bright)' }}>
+              %{Math.round(extraction.confidence * 100)}
+            </span>
+            <span className="chip font-data text-[10px]">{extraction.family}</span>
+            <span className="chip font-data text-[10px]">
+              {extraction.quality === 'structured' ? (tr ? 'yapısal' : 'structured')
+                : extraction.quality === 'partial' ? (tr ? 'kısmi' : 'partial')
+                  : (tr ? 'desteklenmiyor' : 'unsupported')}
+            </span>
+            {answerValidated && <span className="chip font-data text-[10px] text-mint">✓ {tr ? 'cevapla doğrulandı' : 'answer-validated'}</span>}
+          </div>
+          <p className="mt-1.5 font-data text-[10.5px] text-muted">
+            {tr
+              ? <>Bu oran şema/ölçü kanıtının güvenidir, <b>accuracy değildir</b>. Gerçek accuracy yalnız cevap Excel’iyle ölçülür.{!exportAllowed && ' Bağımsız %90 kapısı geçilene kadar teklif çıktısı kilitlidir.'}</>
+              : <>This is confidence in schema/measurement evidence, <b>not accuracy</b>. Actual accuracy is measured only against an answer workbook.{!exportAllowed && ' Quote export stays locked until the independent 90% gate is met.'}</>}
+          </p>
+          {(extraction.candidates?.length ?? 0) > 0 && (
+            <details className="mt-2.5 rounded border border-line px-3 py-2">
+              <summary className="cursor-pointer text-[11.5px] font-semibold text-copper-bright">
+                {tr
+                  ? `${extraction.candidates!.length} kanıtlı fakat ölçüsü eksik aday — listeyi aç`
+                  : `${extraction.candidates!.length} evidenced candidates missing measurements — open list`}
+              </summary>
+              <p className="mt-1.5 font-data text-[10px] text-muted">
+                {tr
+                  ? 'Bu adaylar isim/property kanıtıyla bulundu ama teklif toplamına katılmadı; eksik uzunluk/ölçü uydurulmaz.'
+                  : 'These candidates have name/property evidence but are excluded from quote totals; missing lengths/sizes are never invented.'}
+              </p>
+              <div className="mt-2 overflow-auto">
+                <table className="mtable">
+                  <thead><tr>
+                    <th>{tr ? 'aday' : 'candidate'}</th>
+                    <th>{tr ? 'tür' : 'kind'}</th>
+                    <th className="!text-right">{tr ? 'adet' : 'count'}</th>
+                    <th className="!text-right">{tr ? 'mevcut ölçü' : 'known measure'}</th>
+                  </tr></thead>
+                  <tbody className="font-data">
+                    {extraction.candidates!.slice(0, 40).map((candidate, index) => (
+                      <tr key={`${candidate.kind}-${candidate.code}-${candidate.label}-${index}`}>
+                        <td>{candidate.label || candidate.code}</td>
+                        <td>{candidate.kind}</td>
+                        <td className="num !text-right">{candidate.count}</td>
+                        <td className="num !text-right">
+                          {candidate.lengthM !== undefined ? `${candidate.lengthM.toLocaleString(tr ? 'tr-TR' : 'en-GB')} m`
+                            : candidate.weightKg !== undefined ? `${candidate.weightKg.toLocaleString(tr ? 'tr-TR' : 'en-GB')} kg`
+                              : candidate.s1 !== null ? `${candidate.s1}${candidate.s2 ? `×${candidate.s2}` : ''}″` : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          )}
+        </div>
+      )}
+
       {/* cevap karşılaştırma karnesi + karar tezgâhı */}
       {answer && (
-        <AnswerPanel lang={lang} run={run} answer={answer} calibrations={calibrations} dirty={dirty}
+        <AnswerPanel key={answer.id ?? `${answer.fileName}-${answer.createdAt}`} lang={lang} run={run} answer={answer} calibrations={calibrations} dirty={dirty}
           freshId={freshAnswerId}
           onView={canView ? showInViewer : undefined}
-          onApplied={next => { setAnswer(next); router.refresh(); }} />
+          onApplied={next => { setAnswer(next); void refetchRun(); }} />
       )}
 
       {/* özet kartları */}
@@ -573,8 +694,8 @@ function FeedbackPanel({ lang, runId, onApplied }: {
       <textarea value={text} onChange={e => { setText(e.target.value); if (step === 'scope') setStep('write'); }}
         rows={3} maxLength={2000}
         placeholder={tr
-          ? 'Örn: "GR-166-3DM-014 hattı mevcut tesisat, kapsam dışı olsun" · "BSP FITTING yerine THREADED FITTING yazılsın" · "6″ CAP kalemi bilgi bölümüne insin"'
-          : 'E.g. "Line GR-166-3DM-014 is existing plant, take it out of scope" · "Rename BSP FITTING to THREADED FITTING"'}
+          ? 'Örn: "HAT-014 mevcut tesisat, kapsam dışı olsun" · "BSP FITTING yerine THREADED FITTING yazılsın" · "6″ CAP kalemi bilgi bölümüne insin"'
+          : 'E.g. "Line-014 is existing plant, take it out of scope" · "Rename BSP FITTING to THREADED FITTING"'}
         className="panel mt-3 w-full resize-y px-3.5 py-2.5 font-data text-[12.5px] outline-none focus:border-copper/60" />
 
       {step === 'write' && (
@@ -907,9 +1028,16 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, freshId, onApplie
   const setFilter = (f: 'diffs' | AnswerRowStatus) => { setFilterState(f); setShowAll(false); };
   const [decisions, setDecisions] = useState<Map<string, 'ours' | 'answer' | 'custom'>>(new Map());
   const [customs, setCustoms] = useState<Map<string, CustomDraft>>(new Map());
-  const targetProfile = calibrations.find(c => c.id === run.calibrationId);
+  const runModelFamily = run.analysis?.family && run.analysis.family !== 'plant3d-local'
+    ? 'aps' : 'plant3d-local';
+  const compatibleProfiles = calibrations.filter(c => c.rules.vocab === run.vocab
+    && (c.modelFamily === undefined || c.modelFamily === 'legacy' || c.modelFamily === runModelFamily)
+    && c.status !== 'archived');
+  const initialProfile = compatibleProfiles.find(c => c.id === run.calibrationId);
+  const [selectedProfileId, setSelectedProfileId] = useState(initialProfile?.id ?? '');
+  const targetProfile = compatibleProfiles.find(c => c.id === selectedProfileId);
   const [profileName, setProfileName] = useState(
-    targetProfile?.name ?? (tr ? `${run.projectName} kalibrasyonu` : `${run.projectName} calibration`));
+    initialProfile?.name ?? (tr ? `${run.projectName} kalibrasyonu` : `${run.projectName} calibration`));
 
   const problems = answer.rows.filter(r => r.status !== 'match');
   // tablo havuzu: uyum çubuğundaki duruma tıklayınca o durum filtrelenir.
@@ -973,8 +1101,8 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, freshId, onApplie
       const d = await res.json();
       if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
       toast.success(tr
-        ? `Kalibre edildi: %${answer.accuracy} → %${d.answer.accuracy} · ${d.learned.activatedRules} kural öğrenildi`
-        : `Calibrated: ${answer.accuracy}% → ${d.answer.accuracy}% · learned ${d.learned.activatedRules} rule(s)`);
+        ? `Kalibre edildi: %${answer.accuracy} → %${d.answer.accuracy} · ${d.learned.activatedRules} aktif, ${d.learned.candidateRules ?? 0} kanıt bekleyen kural`
+        : `Calibrated: ${answer.accuracy}% → ${d.answer.accuracy}% · ${d.learned.activatedRules} active, ${d.learned.candidateRules ?? 0} awaiting evidence`);
       onApplied(d.answer as AnswerDiff);
     } catch (e) {
       toast.error((tr ? 'Kalibre edilemedi: ' : 'Calibration failed: ') + (e instanceof Error ? e.message : ''));
@@ -1018,6 +1146,7 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, freshId, onApplie
           {decidable ? '1 · ' : ''}⇪ {tr ? 'Excel cevabı × bizim metraj' : 'Excel answer × our take-off'}
         </span>
         <span className="num text-[22px] font-bold" style={{ color: accColor }}>%{answer.accuracy}</span>
+        <span className="font-data text-[10px] text-muted">{tr ? 'tam kalem uyumu' : 'exact item match'}</span>
         {decidable && changedCount > 0 && projected !== answer.accuracy && (
           <span className="num text-[13px] text-mint">→ %{projected}</span>
         )}
@@ -1027,6 +1156,23 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, freshId, onApplie
           {answer.fileName} · “{answer.sheet}” · {answerItemCount} {tr ? 'kalem okundu' : 'items read'}
         </span>
       </div>
+
+      {answer.metrics && (
+        <div className="mt-2 flex flex-wrap gap-1.5 font-data text-[10.5px]">
+          <span className="chip" title={tr ? 'Ürettiğimiz kalemlerin kaçta kaçı cevaptaki doğru kalemler' : 'How many predicted items are correct'}>
+            {tr ? 'kesinlik' : 'precision'} %{answer.metrics.precision}
+          </span>
+          <span className="chip" title={tr ? 'Cevaptaki doğru kalemlerin kaçta kaçını bulduk' : 'How many reference items were found'}>
+            {tr ? 'yakalama' : 'recall'} %{answer.metrics.recall}
+          </span>
+          <span className="chip" title={tr ? 'Kesinlik ve yakalamanın dengeli özeti' : 'Balanced precision/recall score'}>
+            F1 %{answer.metrics.f1}
+          </span>
+          <span className="chip" title={tr ? 'Kalem miktarlarının kesişim/birleşim oranı' : 'Intersection-over-union of item quantities'}>
+            {tr ? 'miktar örtüşmesi' : 'quantity overlap'} %{answer.metrics.quantityWeightedOverlap.percent}
+          </span>
+        </div>
+      )}
 
       {/* uyum çubuğu: iki listenin nasıl örtüştüğü tek bakışta */}
       <div className="mt-3">
@@ -1256,9 +1402,24 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, freshId, onApplie
               3 · {tr ? 'Kaydet ve öğret' : 'Save & teach'}
             </span>
             <span className="font-data text-[10.5px] text-muted">{tr ? 'öğrenilecek profil:' : 'learn into profile:'}</span>
-            <input value={profileName} onChange={e => setProfileName(e.target.value)}
-              className="panel w-56 px-3 py-2 text-[12.5px] outline-none focus:border-copper/60"
-              placeholder={tr ? 'Profil adı' : 'Profile name'} />
+            <select value={selectedProfileId}
+              onChange={e => {
+                const id = e.target.value;
+                setSelectedProfileId(id);
+                const selected = compatibleProfiles.find(c => c.id === id);
+                setProfileName(selected?.name ?? (tr ? `${run.projectName} kalibrasyonu` : `${run.projectName} calibration`));
+              }}
+              className="panel w-60 px-3 py-2 text-[12.5px] outline-none focus:border-copper/60">
+              <option value="">{tr ? '+ Yeni müşteri profili' : '+ New client profile'}</option>
+              {compatibleProfiles.map(cal => (
+                <option key={cal.id} value={cal.id}>{cal.name} · v{cal.version ?? 1}</option>
+              ))}
+            </select>
+            {!targetProfile && (
+              <input value={profileName} onChange={e => setProfileName(e.target.value)}
+                className="panel w-56 px-3 py-2 text-[12.5px] outline-none focus:border-copper/60"
+                placeholder={tr ? 'Yeni profil adı' : 'New profile name'} />
+            )}
             <button onClick={applyDecisions} disabled={busy || dirty} className="btn btn-primary"
               title={tr ? 'Kararlar uygulanınca karne tahmini bu yüzdeye çıkar' : 'Projected scorecard after your decisions are applied'}>
               {busy ? (tr ? 'Uygulanıyor…' : 'Applying…') : `◈ ${tr ? 'Kalibre et ve öğren' : 'Calibrate & learn'} → %${projected}`}

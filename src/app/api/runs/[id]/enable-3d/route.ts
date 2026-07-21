@@ -5,19 +5,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { apsEnabled, apsSubmit, apsManifestPhase } from '@/lib/aps';
 import { getRun, listRuns, fetchStoredFile, updateRunMeta } from '@/lib/store';
-import { requireApiSession } from '@/lib/session';
+import { isApiDenial, requireApiIdentity } from '@/lib/session';
 import { isUuid, storageKeyName } from '@/lib/upload-policy';
 
 export const runtime = 'nodejs';
 export const maxDuration = 120;
 
 export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
-  const denied = await requireApiSession();
-  if (denied) return denied;
+  const identity = await requireApiIdentity();
+  if (isApiDenial(identity)) return identity;
   if (!apsEnabled) return NextResponse.json({ error: 'APS yapılandırılmamış.' }, { status: 404 });
   const { id } = await ctx.params;
   if (!isUuid(id)) return NextResponse.json({ error: 'geçersiz id' }, { status: 400 });
-  const run = await getRun(id);
+  const run = await getRun(identity, id);
   if (!run) return NextResponse.json({ error: 'not found' }, { status: 404 });
   if (run.status !== 'done') return NextResponse.json({ error: 'Metraj tamamlanmış olmalı.' }, { status: 409 });
   if (run.aps?.urn) return NextResponse.json({ ok: true, already: true });
@@ -26,17 +26,17 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
   const cap = Number(process.env.APS_MONTHLY_TRANSLATION_CAP ?? 30);
   const monthStart = new Date();
   monthStart.setUTCDate(1); monthStart.setUTCHours(0, 0, 0, 0);
-  const apsThisMonth = (await listRuns())
+  const apsThisMonth = (await listRuns(identity))
     .filter(r => r.aps?.submittedAt && new Date(r.aps.submittedAt) >= monthStart).length;
   if (apsThisMonth >= cap) {
     return NextResponse.json({ error: `Aylık bulut çeviri tavanına ulaşıldı (${cap}) — gelecek ay sıfırlanır.` }, { status: 429 });
   }
 
   try {
-    const buf = await fetchStoredFile(`${id}/${storageKeyName(run.fileName)}`);
+    const buf = await fetchStoredFile(identity, `${id}/${storageKeyName(run.fileName)}`);
     const objectKey = `${id}-${storageKeyName(run.fileName)}`;
     const { urn } = await apsSubmit(objectKey, buf);
-    await updateRunMeta(id, { aps: { urn, objectKey, submittedAt: new Date().toISOString() } });
+    await updateRunMeta(identity, id, { aps: { urn, objectKey, submittedAt: new Date().toISOString() } });
     return NextResponse.json({ ok: true });
   } catch (e) {
     console.error('enable-3d failed', e);
@@ -49,16 +49,16 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
 
 // çeviri durumu poll'u — hafif (property indirmez)
 export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
-  const denied = await requireApiSession();
-  if (denied) return denied;
+  const identity = await requireApiIdentity();
+  if (isApiDenial(identity)) return identity;
   const { id } = await ctx.params;
   if (!isUuid(id)) return NextResponse.json({ error: 'geçersiz id' }, { status: 400 });
-  const run = await getRun(id);
+  const run = await getRun(identity, id);
   if (!run?.aps?.urn) return NextResponse.json({ phase: 'none' });
   try {
     const state = await apsManifestPhase(run.aps.urn, run.aps.guid);
     if (state.phase === 'ready' && !run.aps.guid) {
-      await updateRunMeta(id, { aps: { ...run.aps, guid: state.guid } });
+      await updateRunMeta(identity, id, { aps: { ...run.aps, guid: state.guid } });
     }
     return NextResponse.json(state.phase === 'ready' ? { phase: 'ready' } : state);
   } catch (e) {

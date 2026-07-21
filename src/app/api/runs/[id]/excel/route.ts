@@ -1,15 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getRun, getRows, getSteel } from '@/lib/store';
 import { buildRunWorkbook } from '@/lib/excel';
-import { requireApiSession } from '@/lib/session';
+import { isApiDenial, requireApiIdentity } from '@/lib/session';
 
 export const runtime = 'nodejs';
 
 export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
-  const denied = await requireApiSession();
-  if (denied) return denied;
+  const identity = await requireApiIdentity();
+  if (isApiDenial(identity)) return identity;
   const { id } = await ctx.params;
-  const run = await getRun(id);
+  const run = await getRun(identity, id);
   if (!run) return NextResponse.json({ error: 'not found' }, { status: 404 });
   // İşlem bitmeden Excel indirilemesin — boş/yarım dosya teklifi kirletir
   if (run.status !== 'done') {
@@ -18,8 +18,15 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
       : 'Bu çalışma hatayla sonuçlandı — Excel çıktısı üretilemiyor. Dosyayı yeniden yükleyin.';
     return NextResponse.json({ error: msg }, { status: 409 });
   }
+  const answerValidated = Boolean(run.answer
+    && run.answer.accuracy >= (run.answer.targetAccuracy ?? 90));
+  if (run.analysis?.releaseEligible !== true && !answerValidated) {
+    return NextResponse.json({
+      error: 'Bu model ailesi bağımsız %90 doğruluk kapısını henüz geçmedi. Teklif Excel’i için cevap dosyasıyla hedef doğruluğa ulaşılması gerekir.',
+    }, { status: 409, headers: { 'cache-control': 'no-store' } });
+  }
   try {
-    const [rows, steel] = await Promise.all([getRows(id), getSteel(id)]);
+    const [rows, steel] = await Promise.all([getRows(identity, id), getSteel(identity, id)]);
     const buf = await buildRunWorkbook(run, rows, steel);
     // Türkçe karakterler indirme adında KORUNUR: modern tarayıcılar RFC 5987
     // filename* (UTF-8) okur; eski istemciler için TR-çevirili ASCII fallback.

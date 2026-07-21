@@ -41,7 +41,52 @@ export interface RunApsJob {
   guid?: string;
   submittedAt: string;
   claimedUntil?: string; // ready-tamamlama kilidi: çift instance aynı işi bitirmesin
-  retriedAt?: string;    // çeviri-hatasında tek otomatik yeniden deneme (129: -777 retry ile kurtuldu)
+  retriedAt?: string;    // geçici çeviri-hatasında tek otomatik yeniden deneme
+  analysis?: ExtractionQuality;
+}
+
+export interface ExtractionQuality {
+  family: string;
+  quality: 'structured' | 'partial' | 'none';
+  /** Şema kanıtının gücü; cevap Excel'iyle ölçülen accuracy değildir. */
+  confidence: number;
+  releaseEligible: boolean;
+  coverage: {
+    totalObjects: number;
+    recognizedObjects: number;
+    measurableObjects: number;
+    candidateObjects: number;
+    recognizedRatio: number;
+    measurableRatio: number;
+  };
+  provenance: Array<{
+    extractor: string;
+    objects: number;
+    rows: number;
+    candidates: number;
+    confidence: number;
+    limitations: string[];
+  }>;
+  candidates?: Array<{
+    kind: 'steel-profile' | 'piping-component' | 'pipe-without-length';
+    code: string;
+    label: string;
+    count: number;
+    s1: number | null;
+    s2: number;
+    lengthM?: number;
+    weightKg?: number;
+    confidence: number;
+  }>;
+}
+
+export interface RunCalibrationSnapshot {
+  id: string;
+  name: string;
+  version: number;
+  rules: CalibrationRules;
+  modelFamily: 'plant3d-local' | 'aps' | 'legacy';
+  clientKey: string;
 }
 
 export interface Run {
@@ -51,9 +96,12 @@ export interface Run {
   fileSize: number;
   vocab: VocabProfileId;
   calibrationId: string | null;
+  calibrationSnapshot?: RunCalibrationSnapshot | null;
   status: 'processing' | 'done' | 'error';
   error?: string;
   aps?: RunApsJob | null;
+  /** Extractor evidence quality for every local or APS run. */
+  analysis?: ExtractionQuality | null;
   totals: RunTotals;
   fasteners: { gaskets: number; boltSets: number; stubEnds: number };
   progress?: StageEvent[];
@@ -107,8 +155,23 @@ export interface AnswerDiff {
   appliedAt?: string;
   calibrationVersion?: number;
   counts: { matched: number; qtyDiff: number; fieldDiff?: number; missing: number; extra: number };
+  metrics?: {
+    precision: number;
+    recall: number;
+    f1: number;
+    quantityWeightedOverlap: AnswerQuantityOverlap;
+    quantityWeightedOverlapByUnit: Record<Unit, AnswerQuantityOverlap>;
+  };
   rows: AnswerDiffRow[];
   createdAt: string;
+}
+
+export interface AnswerQuantityOverlap {
+  percent: number;
+  intersection: number;
+  union: number;
+  oursTotal: number;
+  answerTotal: number;
 }
 
 export type VocabProfileId = 'steel-plant' | 'hygienic';
@@ -142,9 +205,17 @@ export interface ItemCorrectionRule {
     s2?: number;
     unit?: Unit;
     scope?: 'MAIN' | 'INFO';
+    qtyFactor?: number;
   };
   source: 'accepted_answer' | 'custom';
   evidenceCount: number;
+  /**
+   * Eski kayıtlarda status yoktur; bunlar geriye uyumluluk için aktif kabul edilir.
+   * Yeni, genellenebilir kurallar önce adaydır ve bağımsız model kanıtı biriktirir.
+   */
+  status?: 'candidate' | 'active' | 'rejected';
+  evidenceRunIds?: string[];
+  minEvidence?: number;
 }
 
 export interface Calibration {
@@ -153,6 +224,9 @@ export interface Calibration {
   rules: CalibrationRules;
   learnedFrom: string[]; // run id'leri
   version?: number;
+  modelFamily?: 'plant3d-local' | 'aps' | 'legacy';
+  clientKey?: string;
+  status?: 'draft' | 'active' | 'archived';
   createdAt: string;
   updatedAt: string;
 }

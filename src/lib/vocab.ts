@@ -2,6 +2,8 @@
 // Kurallar üç gerçek müşteri vakasıyla kalibre edildi (bkz. dwg-takeoff/METODOLOJI.md)
 import type { CalibrationRules, MtoRow, RunTotals, SteelRow, VocabProfileId } from './types';
 import type { ParsedComponent, ParseResult } from './parser/nwd';
+import { isCorrectionRuleActive } from './calibration-core';
+import { is45DegreeBendDescription } from './parser/nwd-core';
 
 // Tesisat tipini dosyadan algıla — sinyaller iki gerçek vakada ölçüldü (2026-07-10):
 // Hijyenik fixture: TRU-BORE / DIN 11850; çelik fixture: ASME / WELD NECK / A105.
@@ -26,13 +28,22 @@ export function applyRules(parsed: ParseResult, rules: CalibrationRules): {
   const rows: MtoRow[] = [];
   const comps = parsed.components;
 
-  // refakat flanşı tespiti: akış sırasında ±2 komşuda vana/enstrüman/süzgeç
+  // Refakat flanşı tespiti yalnız açık katalog tanımı + aynı hat/boyut kanıtıyla
+  // yapılır. NWD segment sırası fiziksel bağlantı değildir; salt ±2 yakınlık,
+  // özellikle farklı hatların art arda yazıldığı modellerde gerçek flanşları siler.
   const NEI = new Set(['Valve', 'InlineInstrument', 'Strainer', 'SpacerDisk']);
+  const COMPANION_HINT = /\b(?:COMPANION|MATING)\s+FLANGE\b|\bFLANGE\s+(?:FOR|AT)\s+(?:VALVE|INSTRUMENT|STRAINER)\b/i;
   const companion = new Set<number>();
   comps.forEach((c, i) => {
-    if (c.klass !== 'Flange') return;
+    if (c.klass !== 'Flange' || !COMPANION_HINT.test(`${c.desc} ${c.sub}`)) return;
     for (let j = Math.max(0, i - 2); j <= Math.min(comps.length - 1, i + 2); j++) {
-      if (j !== i && NEI.has(comps[j].klass)) { companion.add(i); break; }
+      const neighbour = comps[j];
+      if (j !== i && NEI.has(neighbour.klass)
+        && !c.lineGuessed && !neighbour.lineGuessed
+        && c.line === neighbour.line && c.s1 != null && c.s1 === neighbour.s1) {
+        companion.add(i);
+        break;
+      }
     }
   });
 
@@ -43,6 +54,7 @@ export function applyRules(parsed: ParseResult, rules: CalibrationRules): {
     // Cevap/özel değer kabulünden öğrenilen kurallar profil içinde yalnız tam
     // çıktı imzasına uygulanır. Hat/alt-tip varsa eşleşmeyi daha da daraltır.
     for (const correction of rules.itemCorrections ?? []) {
+      if (!isCorrectionRuleActive(correction)) continue;
       const m = correction.match;
       // Tek-örnek güvenlik kapısı: "boyut bilinmiyor" (s1=null) kovasına DEĞER atayan
       // kurallar ya hat/alt-tip bağlamı taşımalı ya da ≥2 dosyada doğrulanmış olmalı —
@@ -58,6 +70,7 @@ export function applyRules(parsed: ParseResult, rules: CalibrationRules): {
       if (correction.set.s2 !== undefined) s2 = correction.set.s2;
       if (correction.set.unit !== undefined) unit = correction.set.unit;
       if (correction.set.scope !== undefined) scope = correction.set.scope;
+      if (correction.set.qtyFactor !== undefined) qty *= correction.set.qtyFactor;
     }
     const key = [line, code, sub, s1, s2, unit, scope].join('|');
     const ex = agg.get(key);
@@ -72,7 +85,7 @@ export function applyRules(parsed: ParseResult, rules: CalibrationRules): {
         push(line, 'PIPE', '', c.s1, 0, (c.lengthMm / 1000) * rules.grossPipeFactor, 'M', '', 'MAIN');
         break;
       case 'Elbow': {
-        const is45 = c.desc.includes('45 DEG');
+        const is45 = is45DegreeBendDescription(c.desc);
         if (is45 && rules.merge45Into90) push(line, '90 BEND', '', c.s1, 0, 1, 'EA', '45° (birleşik)', 'MAIN');
         else push(line, is45 ? '45 BEND' : '90 BEND', '', c.s1, 0, 1, 'EA', '', 'MAIN');
         break;

@@ -4,18 +4,18 @@
 import { NextResponse } from 'next/server';
 import { listPushSubscriptions } from '@/lib/store';
 import { sendPush } from '@/lib/notify';
-import { requireApiSession } from '@/lib/session';
+import { isApiDenial, requireApiIdentity } from '@/lib/session';
 
 export const runtime = 'nodejs';
 
 export async function POST() {
-  const denied = await requireApiSession();
-  if (denied) return denied;
-  const subs = await listPushSubscriptions();
+  const identity = await requireApiIdentity();
+  if (isApiDenial(identity)) return identity;
+  const subs = await listPushSubscriptions(identity);
   if (subs.length === 0) {
     return NextResponse.json({ subscriptions: 0 });
   }
-  await sendPush({
+  await sendPush(identity, {
     title: 'Metriq — test bildirimi ✓',
     body: 'Masaüstü bildirimleri çalışıyor. Metraj bitince böyle haber alacaksın.',
     url: '/', tag: 'push-test', force: true,

@@ -3,6 +3,7 @@ import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { t, type Lang, type TKey } from '@/lib/i18n';
 import { isAllowedNwdSize } from '@/lib/upload-policy';
+import type { Calibration } from '@/lib/types';
 
 // HTTP durum kodunu taşıyan hata — catch'te kullanıcı-dostu mesaja çevrilir
 class HttpError extends Error {
@@ -17,7 +18,7 @@ function errorKey(e: unknown): TKey {
   return 'err_server';
 }
 
-export function UploadZone({ lang }: { lang: Lang }) {
+export function UploadZone({ lang, calibrations }: { lang: Lang; calibrations: Calibration[] }) {
   const router = useRouter();
   const tr = lang === 'tr';
   const fileRef = useRef<HTMLInputElement>(null);
@@ -25,6 +26,7 @@ export function UploadZone({ lang }: { lang: Lang }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [projectName, setProjectName] = useState('');
+  const [calibrationId, setCalibrationId] = useState('');
   // büyük dosyada "donmuş" hissini bitiren gerçek yükleme yüzdesi (XHR progress)
   const [progress, setProgress] = useState<number | null>(null);
 
@@ -59,9 +61,8 @@ export function UploadZone({ lang }: { lang: Lang }) {
     setBusy(true); setError('');
     try {
       const meta = {
-        // Tesisat tipi dosyadan otomatik algılanır; kalibrasyon üst formda seçilmez.
         projectName: projectName || file.name.replace(/\.nwd$/i, ''),
-        vocab: 'auto', calibrationId: null, fileName: file.name,
+        vocab: 'auto', calibrationId: calibrationId || null, fileName: file.name,
       };
       let res: Response;
       if (file.size > 4_000_000) {
@@ -107,21 +108,44 @@ export function UploadZone({ lang }: { lang: Lang }) {
 
   return (
     <div className="space-y-4">
-      {/* Sadece proje adı — tesisat tipi dosyadan otomatik algılanır (seçim gerekmez) */}
-      <div>
-        <label htmlFor="uz-name" className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-muted">
-          {tr ? 'Proje adı' : 'Project name'}
-          <span className="ml-1.5 font-normal normal-case tracking-normal opacity-70">
-            {tr ? '(opsiyonel — boş kalırsa dosya adı kullanılır)' : '(optional — file name is used if empty)'}
-          </span>
-        </label>
-        <input
-          id="uz-name"
-          value={projectName}
-          onChange={e => setProjectName(e.target.value)}
-          placeholder={tr ? 'ör. Şantiye A — Buhar Hattı' : 'e.g. Site A — Steam Line'}
-          className="panel w-full max-w-md px-3.5 py-2.5 text-[13px] outline-none focus:border-copper/60 placeholder:text-muted/60"
-        />
+      <div className="grid gap-3 md:grid-cols-2">
+        <div>
+          <label htmlFor="uz-name" className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-muted">
+            {tr ? 'Proje adı' : 'Project name'}
+            <span className="ml-1.5 font-normal normal-case tracking-normal opacity-70">
+              {tr ? '(opsiyonel)' : '(optional)'}
+            </span>
+          </label>
+          <input
+            id="uz-name"
+            value={projectName}
+            onChange={e => setProjectName(e.target.value)}
+            placeholder={tr ? 'ör. Şantiye A — Buhar Hattı' : 'e.g. Site A — Steam Line'}
+            className="panel w-full px-3.5 py-2.5 text-[13px] outline-none focus:border-copper/60 placeholder:text-muted/60"
+          />
+        </div>
+        <div>
+          <label htmlFor="uz-profile" className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wider text-muted">
+            {tr ? 'Müşteri profili' : 'Client profile'}
+            <span className="ml-1.5 font-normal normal-case tracking-normal opacity-70">
+              {tr ? '(isteğe bağlı)' : '(optional)'}
+            </span>
+          </label>
+          <select id="uz-profile" value={calibrationId} onChange={e => setCalibrationId(e.target.value)}
+            className="panel w-full px-3.5 py-2.5 text-[13px] outline-none focus:border-copper/60">
+            <option value="">{tr ? 'Otomatik algıla — önerilen' : 'Auto-detect — recommended'}</option>
+            {calibrations.map(cal => (
+              <option key={cal.id} value={cal.id}>
+                {cal.name} · v{cal.version ?? 1} · {cal.learnedFrom.length} {tr ? 'model' : 'model(s)'}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 font-data text-[10px] text-muted">
+            {calibrationId
+              ? (tr ? 'Bu dosyada seçtiğin müşterinin onaylı kuralları kullanılır.' : 'Approved rules for the selected client are used for this file.')
+              : (tr ? 'Model ailesi algılanır; yalnız güvenli ve uygun profil otomatik seçilir.' : 'The model family is detected; only a safe matching profile is selected automatically.')}
+          </p>
+        </div>
       </div>
 
       <div

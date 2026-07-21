@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import { deflateSync } from 'node:zlib';
-import { findZlibBlobs } from '../src/lib/parser/nwd-core.ts';
+import { findZlibBlobs, is45DegreeBendDescription } from '../src/lib/parser/nwd-core.ts';
+
+assert.equal(is45DegreeBendDescription('ELBOW 45 DEG LR'), true);
+assert.equal(is45DegreeBendDescription('Pressed Elbows 45Deg 1.5xD'), true);
+assert.equal(is45DegreeBendDescription('ELBOW 45, METRIC LR'), true);
+assert.equal(is45DegreeBendDescription('Bend DIN 2605-1-45-3'), true);
+assert.equal(is45DegreeBendDescription('ELBOW 90 DEG, ASTM A234 WPB'), false);
+assert.equal(is45DegreeBendDescription('PIPE ASTM A312 TP 304L'), false);
 
 // Plant 3D imzası taşıyan akışlar tutulur…
 const payload = Buffer.from('PnPGuid metriq parser guard '.repeat(20));

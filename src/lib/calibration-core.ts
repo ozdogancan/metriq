@@ -18,6 +18,7 @@ export interface CalibrationDecisionInput {
 export interface DerivedRulesResult {
   rules: CalibrationRules;
   activatedRules: number;
+  candidateRules: number;
   recordedExamples: number;
 }
 
@@ -143,11 +144,31 @@ function sameRuleSet(a: ItemCorrectionRule['set'], b: ItemCorrectionRule['set'])
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+/** Legacy rules pre-date lifecycle state and remain active for compatibility. */
+export function isCorrectionRuleActive(rule: ItemCorrectionRule): boolean {
+  return rule.status === undefined || rule.status === 'active';
+}
+
+function minimumEvidence(rule: Pick<ItemCorrectionRule, 'match' | 'set'>): number {
+  // A line/sub-qualified correction has a deliberately narrow blast radius. Generic
+  // transforms (especially unknown-size assignment, scope and quantity scaling) need
+  // two distinct models before they may affect a future take-off.
+  if (rule.match.line !== undefined || rule.match.sub !== undefined) return 1;
+  return 2;
+}
+
+function evidenceIds(rule: ItemCorrectionRule, currentRunId: string): string[] {
+  const ids = new Set(rule.evidenceRunIds ?? []);
+  if (currentRunId) ids.add(currentRunId);
+  return [...ids];
+}
+
 export function deriveCalibrationRules(
   base: CalibrationRules,
   answer: AnswerDiff,
   decisions: CalibrationDecisionInput[],
   idFactory: () => string,
+  evidenceRunId = answer.id ?? '',
 ): DerivedRulesResult {
   const rules: CalibrationRules = {
     ...base,
@@ -161,6 +182,7 @@ export function deriveCalibrationRules(
   };
   const byId = new Map(decisions.map(decision => [decision.itemId, decision]));
   let activatedRules = 0;
+  let candidateRules = 0;
   let recordedExamples = 0;
 
   for (const item of answer.rows) {
@@ -173,15 +195,6 @@ export function deriveCalibrationRules(
     if (answerValuesEqual(ours, chosen) || !ours) continue;
 
     const source = decision.choice === 'custom' ? 'custom' : 'accepted_answer';
-    const codeChanged = chosen !== null && normCode(ours.code) !== normCode(chosen.code);
-    const fieldsOtherThanCodeSame = chosen !== null
-      && ours.s1 === chosen.s1 && ours.s2 === chosen.s2 && ours.unit === chosen.unit;
-    if (codeChanged && fieldsOtherThanCodeSame) {
-      rules.codeRenames[ours.code] = chosen!.code;
-      activatedRules++;
-      continue;
-    }
-
     const line = oneUseful(item.oursSide?.lines, new Set(['?', '*']));
     const sub = oneUseful(item.oursSide?.subs, new Set(['']));
     const match: ItemCorrectionRule['match'] = {
@@ -204,21 +217,50 @@ export function deriveCalibrationRules(
       if (ours.s1 !== chosen.s1) set.s1 = chosen.s1;
       if (ours.s2 !== chosen.s2) set.s2 = chosen.s2;
       if (ours.unit !== chosen.unit) set.unit = chosen.unit;
-      // Miktar farkı tek dosyadan genellenmez; karar örnek olarak saklanır.
+      if (ours.qty > 0 && !answerValuesEqual(ours, chosen)) {
+        const factor = round6(chosen.qty / ours.qty);
+        if (Number.isFinite(factor) && factor > 0 && Math.abs(factor - 1) > 0.000001) {
+          set.qtyFactor = factor;
+        }
+      }
       if (!Object.keys(set).length) continue;
     }
 
-    const existing = rules.itemCorrections!.find(rule => sameRuleMatch(rule.match, match));
+    const existing = rules.itemCorrections!.find(rule => sameRuleMatch(rule.match, match) && sameRuleSet(rule.set, set));
     if (existing) {
-      if (sameRuleSet(existing.set, set)) {
-        existing.evidenceCount++;
+      if (existing.status === 'rejected') continue;
+      const wasActive = isCorrectionRuleActive(existing);
+      const ids = evidenceIds(existing, evidenceRunId);
+      existing.evidenceRunIds = ids;
+      existing.evidenceCount = Math.max(existing.evidenceCount, ids.length);
+      existing.minEvidence ??= minimumEvidence(existing);
+      const hasActiveConflict = rules.itemCorrections!.some(other => other.id !== existing.id
+        && sameRuleMatch(other.match, match) && !sameRuleSet(other.set, set) && isCorrectionRuleActive(other));
+      existing.status = !hasActiveConflict && existing.evidenceCount >= existing.minEvidence ? 'active' : 'candidate';
+      if (!wasActive && existing.status === 'active') {
         activatedRules++;
+      } else if (existing.status === 'candidate') {
+        candidateRules++;
       }
       continue;
     }
-    rules.itemCorrections!.push({ id: idFactory(), match, set, source, evidenceCount: 1 });
-    activatedRules++;
+    const candidate: ItemCorrectionRule = {
+      id: idFactory(), match, set, source,
+      evidenceCount: evidenceRunId ? 1 : 0,
+      evidenceRunIds: evidenceRunId ? [evidenceRunId] : [],
+      minEvidence: minimumEvidence({ match, set }),
+      status: 'candidate',
+    };
+    const hasActiveConflict = rules.itemCorrections!.some(other => sameRuleMatch(other.match, match)
+      && !sameRuleSet(other.set, set) && isCorrectionRuleActive(other));
+    if (!hasActiveConflict && candidate.evidenceCount >= candidate.minEvidence!) {
+      candidate.status = 'active';
+      activatedRules++;
+    } else {
+      candidateRules++;
+    }
+    rules.itemCorrections!.push(candidate);
   }
 
-  return { rules, activatedRules, recordedExamples };
+  return { rules, activatedRules, candidateRules, recordedExamples };
 }

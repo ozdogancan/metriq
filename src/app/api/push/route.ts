@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { addPushSubscription, removePushSubscription } from '@/lib/store';
-import { requireApiSession } from '@/lib/session';
+import { isApiDenial, requireApiIdentity } from '@/lib/session';
 
 export const runtime = 'nodejs';
 
@@ -32,8 +32,8 @@ function validKey(value: unknown, max: number): value is string {
 }
 
 export async function POST(req: NextRequest) {
-  const denied = await requireApiSession();
-  if (denied) return denied;
+  const identity = await requireApiIdentity();
+  if (isApiDenial(identity)) return identity;
   const body = await req.json().catch(() => null);
   const sub = body?.subscription;
   if (!validEndpoint(sub?.endpoint)
@@ -41,15 +41,15 @@ export async function POST(req: NextRequest) {
     || !validKey(sub?.keys?.auth, 128)) {
     return NextResponse.json({ error: 'bad subscription' }, { status: 400 });
   }
-  await addPushSubscription({ endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth } });
+  await addPushSubscription(identity, { endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth } });
   return NextResponse.json({ ok: true });
 }
 
 export async function DELETE(req: NextRequest) {
-  const denied = await requireApiSession();
-  if (denied) return denied;
+  const identity = await requireApiIdentity();
+  if (isApiDenial(identity)) return identity;
   const body = await req.json().catch(() => null);
   if (!validEndpoint(body?.endpoint)) return NextResponse.json({ error: 'endpoint missing' }, { status: 400 });
-  await removePushSubscription(body.endpoint);
+  await removePushSubscription(identity, body.endpoint);
   return NextResponse.json({ ok: true });
 }

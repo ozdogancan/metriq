@@ -1,23 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
-import { listCalibrations, saveCalibration, deleteCalibration } from '@/lib/store';
+import { listCalibrations, saveCalibration, deleteCalibration, getRun } from '@/lib/store';
 import { CalibrationPostSchema, zodMessage } from '@/lib/schemas';
-import type { Calibration } from '@/lib/types';
-import { getSessionUser, requireApiSession } from '@/lib/session';
+import { isApiDenial, requireApiIdentity } from '@/lib/session';
 import { isUuid } from '@/lib/upload-policy';
 
 export const runtime = 'nodejs';
 
 export async function GET() {
-  const denied = await requireApiSession();
-  if (denied) return denied;
-  return NextResponse.json(await listCalibrations());
+  const identity = await requireApiIdentity();
+  if (isApiDenial(identity)) return identity;
+  return NextResponse.json(await listCalibrations(identity));
 }
 
 export async function POST(req: NextRequest) {
-  const denied = await requireApiSession();
-  if (denied) return denied;
-  const actor = (await getSessionUser())!;
+  const identity = await requireApiIdentity();
+  if (isApiDenial(identity)) return identity;
+  const actor = identity.email;
   try {
     const raw = await req.json().catch(() => null);
     if (!raw || typeof raw !== 'object') {
@@ -30,7 +29,13 @@ export async function POST(req: NextRequest) {
     }
     const body = parsed.data;
     const now = new Date().toISOString();
-    const cal: Calibration = {
+    let modelFamily = body.modelFamily;
+    if (!Object.prototype.hasOwnProperty.call(raw, 'modelFamily') && body.learnedFrom.length) {
+      const sourceRun = await getRun(identity, body.learnedFrom[body.learnedFrom.length - 1]);
+      if (sourceRun) modelFamily = sourceRun.analysis?.family && sourceRun.analysis.family !== 'plant3d-local'
+        ? 'aps' : 'plant3d-local';
+    }
+    const cal = {
       id: body.id || randomUUID(),
       name: body.name,
       rules: body.rules,
@@ -38,8 +43,11 @@ export async function POST(req: NextRequest) {
       version: body.expectedVersion,
       createdAt: now,
       updatedAt: now,
+      modelFamily,
+      clientKey: body.clientKey,
+      status: body.status,
     };
-    const saved = await saveCalibration(cal, body.expectedVersion, actor);
+    const saved = await saveCalibration(identity, cal, body.expectedVersion, actor);
     return NextResponse.json(saved);
   } catch (e) {
     console.error('calibration save failed', e);
@@ -51,9 +59,9 @@ export async function POST(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
-  const denied = await requireApiSession();
-  if (denied) return denied;
-  const actor = (await getSessionUser())!;
+  const identity = await requireApiIdentity();
+  if (isApiDenial(identity)) return identity;
+  const actor = identity.email;
   const id = req.nextUrl.searchParams.get('id');
   if (!isUuid(id)) return NextResponse.json({ error: 'geçersiz id' }, { status: 400 });
   const version = Number(req.nextUrl.searchParams.get('version'));
@@ -61,7 +69,7 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ error: 'geçersiz profil sürümü' }, { status: 400 });
   }
   try {
-    await deleteCalibration(id, version, actor);
+    await deleteCalibration(identity, id, version, actor);
     return NextResponse.json({ ok: true });
   } catch (e) {
     console.error('calibration delete failed', e);

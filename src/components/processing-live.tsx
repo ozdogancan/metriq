@@ -19,7 +19,6 @@ export function ProcessingLive({ lang, initial }: { lang: Lang; initial: Run }) 
   const [timedOut, setTimedOut] = useState(false);
   const doneRef = useRef(false);
   const apsRef = useRef(Boolean(initial.aps));
-  const tickCountRef = useRef(0);
 
   useEffect(() => {
     let alive = true;
@@ -38,12 +37,6 @@ export function ProcessingLive({ lang, initial }: { lang: Lang; initial: Run }) 
         setTimedOut(true);
         stop();
         return;
-      }
-      // Bulut (APS) işi: sunucu tarafını periyodik İLERLET — çeviri/çıkarım
-      // adımları bu ping'le yürür. ~4 sn'de bir yeter (5 tikte 1).
-      tickCountRef.current += 1;
-      if (apsRef.current && tickCountRef.current % 5 === 1) {
-        fetch(`/api/runs/${initial.id}/advance`, { method: 'POST' }).catch(() => { /* sıradaki tik dener */ });
       }
       try {
         // slim=1: yalnız {run} döner (rows/steel taşınmaz) — poll yükü küçük kalır

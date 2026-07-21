@@ -1,14 +1,14 @@
 /**
  * NWD (Navisworks) Plant 3D MTO parser — TypeScript port of the calibrated
  * Python reference implementation `dwg-takeoff/nwd_mto3.py` (v3 pipeline,
- * customer-answer reconciled 2026-07-09).
+ * answer-corpus reconciled 2026-07-09).
  *
  * Pure Node module: the only runtime dependency is node:zlib.
  * Safe for a Next.js API route (Node runtime) — no filesystem access,
  * operates on an in-memory Buffer.
  */
 import * as zlib from 'node:zlib';
-import { asmeOdToNps, dnToNps } from '../pipe-sizes.ts';
+import { asmeOdToNps, dnToNps, npsToDn, standardAliasOdToNps } from '../pipe-sizes.ts';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -78,7 +78,7 @@ const OD2NPS_METRIC: Array<[number, number]> = [
 function od2npsMetric(od: number): number | null {
   // Model toleransları bazı Plant 3D exporter'larında ±2 mm'yi aşıyor.
   // Bu eşleme aşağıda ayrıca DN↔NPS tutarlılığıyla doğrulandığı için 2.6 mm
-  // false-positive üretmeden 26113'teki 10" FLLB flanşlarını çözüyor.
+  // false-positive üretmeden ölçüleri çözüyor.
   for (const [o, n] of OD2NPS_METRIC) if (Math.abs(o - od) <= 2.6) return n;
   return null;
 }
@@ -88,12 +88,24 @@ function od2npsMetric(od: number): number | null {
 const LTOKEN = /^[A-Z0-9][A-Z0-9_\-.' ]{3,40}$/;
 const LBLACK = /ASME|DIN |BS EN|SCH |PN \d|B36|A105|A106|A312|A403|A234|WPB|304L|316L|KG|^PL$|^BW$|^FL$|^RF$|^New$|^SHOP$|^FIELD$|^IDEA$|ByLayer|GASKET|FLANGE|PIPE|ELBOW|VALVE|TEE|STUB|^PTFE$|^Typ |ZINC|COATED|BOLT|LEVER|^mm$|^BV$|Continuous|Default/i;
 const SCODE = /^S\d{1,2}$/;
-const DESC_HINT = /PIPE|ELBOW|FLANGE|TEE|REDUC|VALVE|CAP|STRAINER|INSTR/i;
+const DESC_HINT = /PIPE|ELBOW|BEND|FLANGE|TEE|REDUC|VALVE|CAP|STRAINER|INSTR/i;
 const LINE_HINT = /STEAM|COND|WS\d|PRV|FLASH|HEX|RELIEF/i;
 const MEMBER = /^Member (.+?) x ([\d.]+)$/;
 
 function okline(x: string | null | undefined): x is string {
   return !!x && LTOKEN.test(x) && !FNUM.test(x) && !LBLACK.test(x);
+}
+
+/**
+ * Recognise only explicit 45-degree component wording. This covers common
+ * catalogue spellings while avoiding a bare-number match elsewhere in a
+ * material description.
+ */
+export function is45DegreeBendDescription(value: string | null | undefined): boolean {
+  if (!value) return false;
+  return /(?:^|\D)45\s*(?:DEG(?:REE)?S?\b|°)/i.test(value)
+    || /\b(?:ELBOW|BEND)\b[^\d\r\n]{0,16}45(?:\D|$)/i.test(value)
+    || /\bDIN\s*\d+(?:-\d+)*-45(?:-|\/|\b)/i.test(value);
 }
 
 // ---------------------------------------------------------------------------
@@ -390,21 +402,30 @@ function extract(c: RawComp): Item {
     }
   }
 
-  // (od, dn) adjacent pairs — undotted allowed + consistency requirement (ASME + metric-hygienic)
+  // Adjacent (OD, DN) or (OD, NPS) property pairs. Both forms require exact
+  // agreement with a known OD table; a standalone number is never a size.
   const nps: number[] = [];
   let metric = false;
   for (let i = 0; i < v.length - 1; i++) {
     const a = v[i];
     const bv = v[i + 1];
-    if (a && bv && FNUM.test(a) && DIGITS.test(bv)) {
+    if (a && bv && FNUM.test(a) && FNUM.test(bv)) {
       const od = parseFloat(a);
       if (Number.isNaN(od)) continue;
-      const target = dnToNps(parseInt(bv, 10));
-      if (target === null) continue;
-      const m = asmeOdToNps(od);
-      if (m !== null && Math.abs(target - m) < 0.01) { nps.push(m); continue; }
+      const m = asmeOdToNps(od) ?? standardAliasOdToNps(od);
       const m2 = od2npsMetric(od);
-      if (m2 !== null && Math.abs(target - m2) < 0.01) { nps.push(m2); metric = true; }
+      const targetDn = DIGITS.test(bv) ? dnToNps(parseInt(bv, 10)) : null;
+      if (targetDn !== null && m !== null && Math.abs(targetDn - m) < 0.01) { nps.push(m); continue; }
+      if (targetDn !== null && m2 !== null && Math.abs(targetDn - m2) < 0.01) {
+        nps.push(m2);
+        metric = true;
+        continue;
+      }
+
+      const targetNps = parseFloat(bv);
+      if (npsToDn(targetNps) === null) continue;
+      if (m !== null && Math.abs(targetNps - m) < 0.01) { nps.push(m); continue; }
+      if (m2 !== null && Math.abs(targetNps - m2) < 0.01) { nps.push(m2); metric = true; }
     }
   }
   d.nps = [...new Set(nps)].sort((x, y) => y - x);
@@ -422,7 +443,7 @@ function codeOf(d: Item): [string, string] {
   const sk = d.skey;
   const nps = d.nps;
   if (cl === 'Pipe') return ['PIPE', ''];
-  if (cl === 'Elbow') return [ds.includes('45 DEG') ? '45 BEND' : '90 BEND', ''];
+  if (cl === 'Elbow') return [is45DegreeBendDescription(ds) ? '45 BEND' : '90 BEND', ''];
   if (cl === 'Tee') return [(ds.includes('RED') || nps.length >= 2) ? 'RED TEE' : 'EQ TEE', ''];
   if (cl === 'Reducer') return ['CON RED', ds.includes('ECC') ? 'ECC' : ''];
   if (cl === 'BlindFlange') return ['BLIND FLANGE', ''];

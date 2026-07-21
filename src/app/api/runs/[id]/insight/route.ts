@@ -1,22 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getRun, getRows, getSteel } from '@/lib/store';
-import { requireApiSession } from '@/lib/session';
+import { isApiDenial, requireApiIdentity } from '@/lib/session';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
 // Gemini ile kısa mühendis-özeti (opsiyonel — GEMINI_API_KEY yoksa 404)
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
-  const denied = await requireApiSession();
-  if (denied) return denied;
+  const identity = await requireApiIdentity();
+  if (isApiDenial(identity)) return identity;
   const key = process.env.GEMINI_API_KEY;
   if (!key) return NextResponse.json({ error: 'disabled' }, { status: 404 });
   const { id } = await ctx.params;
-  const run = await getRun(id);
+  const run = await getRun(identity, id);
   if (!run) return NextResponse.json({ error: 'not found' }, { status: 404 });
   const { lang = 'en' } = await req.json().catch(() => ({}));
 
-  const [rows, steel] = await Promise.all([getRows(id), getSteel(id)]);
+  const [rows, steel] = await Promise.all([getRows(identity, id), getSteel(identity, id)]);
   const main = rows.filter(r => r.scope === 'MAIN');
   const compact = main.map(r => `${r.line}|${r.code}${r.sub ? '/' + r.sub : ''}|${r.s1 ?? '?'}x${r.s2 || 0}|${r.qty}${r.unit}`).join('\n');
   const steelTxt = steel.map(s => `${s.profile} ${s.lengthMm}mm x${s.count} (${s.totalKg.toFixed(0)}kg)`).join('; ');

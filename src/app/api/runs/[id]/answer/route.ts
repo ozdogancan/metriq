@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { getRun, getRows, recordAnswerComparison } from '@/lib/store';
 import { parseAnswerXlsx, compareAnswer } from '@/lib/answer-compare';
 import { MAX_ANSWER_XLSX_BYTES } from '@/lib/upload-policy';
-import { getSessionUser, requireApiSession } from '@/lib/session';
+import { isApiDenial, requireApiIdentity } from '@/lib/session';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -14,11 +14,11 @@ type Ctx = { params: Promise<{ id: string }> };
 
 export async function POST(req: NextRequest, ctx: Ctx) {
   try {
-  const denied = await requireApiSession();
-  if (denied) return denied;
-  const actor = (await getSessionUser())!;
+  const identity = await requireApiIdentity();
+  if (isApiDenial(identity)) return identity;
+  const actor = identity.email;
   const { id } = await ctx.params;
-  const run = await getRun(id);
+  const run = await getRun(identity, id);
   if (!run) return NextResponse.json({ error: 'not found' }, { status: 404 });
   if (run.status !== 'done') {
     return NextResponse.json({ error: 'Karşılaştırma için metrajın tamamlanmış olması gerekir.' }, { status: 409 });
@@ -26,8 +26,8 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     const fd = await req.formData();
     const file = fd.get('file') as File | null;
     if (!file) return NextResponse.json({ error: 'dosya eksik' }, { status: 400 });
-    if (!/\.(?:xlsx|xlsm)$/i.test(file.name)) {
-      return NextResponse.json({ error: 'Cevap dosyası .xlsx veya .xlsm olmalı.' }, { status: 400 });
+    if (!/\.(?:xlsx|xlsm|xls)$/i.test(file.name)) {
+      return NextResponse.json({ error: 'Cevap dosyası .xlsx, .xlsm veya .xls olmalı.' }, { status: 400 });
     }
     if (file.size <= 0 || file.size > MAX_ANSWER_XLSX_BYTES) {
       return NextResponse.json({ error: 'Cevap dosyası 4 MB sınırını aşıyor.' }, { status: 413 });
@@ -37,13 +37,13 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     if (!answerRows.length) {
       return NextResponse.json({ error: 'Cevap dosyasında satır bulunamadı.' }, { status: 400 });
     }
-    const ours = await getRows(id);
+    const ours = await getRows(identity, id);
     const comparisonId = randomUUID();
     const diff = compareAnswer(ours, answerRows, file.name, sheet, {
       comparisonId,
       baseRowsRevision: run.rowRevision ?? 0,
     });
-    await recordAnswerComparison({
+    await recordAnswerComparison(identity, {
       id: comparisonId,
       runId: id,
       baseRowRevision: run.rowRevision ?? 0,

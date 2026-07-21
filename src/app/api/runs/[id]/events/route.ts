@@ -2,32 +2,37 @@ import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
 import { addLearningEvents, getRun } from '@/lib/store';
 import type { LearningEvent } from '@/lib/types';
-import { requireApiSession } from '@/lib/session';
+import { isApiDenial, requireApiIdentity } from '@/lib/session';
+import { LearningEventsRequestSchema, zodMessage } from '@/lib/schemas';
+import { isUuid } from '@/lib/upload-policy';
 
 export const runtime = 'nodejs';
 
 // Kullanıcı düzeltmeleri = öğrenme sinyali. Her düzeltme yapılandırılmış olay olarak
 // kaydedilir (docs/02-learning.md sözleşmesi) — ileride kural önerisi/eğitim verisi olur.
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
-  const denied = await requireApiSession();
-  if (denied) return denied;
+  const identity = await requireApiIdentity();
+  if (isApiDenial(identity)) return identity;
   const { id } = await ctx.params;
-  const run = await getRun(id);
+  if (!isUuid(id)) return NextResponse.json({ error: 'geçersiz id' }, { status: 400 });
+  const run = await getRun(identity, id);
   if (!run) return NextResponse.json({ error: 'not found' }, { status: 404 });
   const body = await req.json().catch(() => null);
-  const incoming = Array.isArray(body?.events) ? body.events : [];
-  if (!incoming.length) return NextResponse.json({ ok: true, saved: 0 });
+  const parsed = LearningEventsRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json({ error: `Geçersiz öğrenme olayı — ${zodMessage(parsed.error)}` }, { status: 400 });
+  }
+  if (!parsed.data.events.length) return NextResponse.json({ ok: true, saved: 0 });
 
-  const events: LearningEvent[] = incoming.slice(0, 200).map((e: Partial<LearningEvent>) => ({
+  const events: LearningEvent[] = parsed.data.events.map(e => ({
     id: randomUUID(),
     runId: id,
     ts: new Date().toISOString(),
-    kind: (['row_edit', 'row_add', 'row_delete', 'calibration_saved', 'run_feedback'].includes(e.kind as string)
-      ? e.kind : 'row_edit') as LearningEvent['kind'],
-    before: e.before ?? null,
-    after: e.after ?? null,
+    kind: e.kind,
+    before: e.before,
+    after: e.after,
     context: { vocab: run.vocab, fileName: run.fileName, calibrationId: run.calibrationId },
   }));
-  await addLearningEvents(events);
+  await addLearningEvents(identity, events);
   return NextResponse.json({ ok: true, saved: events.length });
 }

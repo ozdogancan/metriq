@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { listNotifications, markNotificationsRead, deleteNotifications } from '@/lib/store';
-import { requireApiSession } from '@/lib/session';
+import { isApiDenial, requireApiIdentity } from '@/lib/session';
 
 export const runtime = 'nodejs';
 
@@ -14,31 +14,31 @@ function parseTargets(v: unknown): string[] | 'all' | null {
 }
 
 export async function GET() {
-  const denied = await requireApiSession();
-  if (denied) return denied;
-  const items = await listNotifications(30);
+  const identity = await requireApiIdentity();
+  if (isApiDenial(identity)) return identity;
+  const items = await listNotifications(identity, 30);
   return NextResponse.json({ items, unread: items.filter(n => !n.read).length });
 }
 
 export async function POST(req: NextRequest) {
-  const denied = await requireApiSession();
-  if (denied) return denied;
+  const identity = await requireApiIdentity();
+  if (isApiDenial(identity)) return identity;
   const body = await req.json().catch(() => ({}));
   const targets = parseTargets(body.markRead);
   if (targets) {
-    await markNotificationsRead(targets);
+    await markNotificationsRead(identity, targets);
     return NextResponse.json({ ok: true });
   }
   return NextResponse.json({ error: 'bad request' }, { status: 400 });
 }
 
 export async function DELETE(req: NextRequest) {
-  const denied = await requireApiSession();
-  if (denied) return denied;
+  const identity = await requireApiIdentity();
+  if (isApiDenial(identity)) return identity;
   const body = await req.json().catch(() => ({}));
   const targets = parseTargets(body.ids);
   if (targets) {
-    await deleteNotifications(targets);
+    await deleteNotifications(identity, targets);
     return NextResponse.json({ ok: true });
   }
   return NextResponse.json({ error: 'bad request' }, { status: 400 });

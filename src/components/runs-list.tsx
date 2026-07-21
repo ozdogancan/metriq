@@ -23,7 +23,12 @@ export function RunsList({ lang, runs }: { lang: Lang; runs: Run[] }) {
 
   return (
     <div className="grid gap-3">
-      {runs.map((r, i) => (
+      {runs.map((r, i) => {
+        const answerValidated = Boolean(r.answer
+          && r.answer.accuracy >= (r.answer.targetAccuracy ?? 90));
+        const exportAllowed = r.status === 'done'
+          && (r.analysis?.releaseEligible === true || answerValidated);
+        return (
         <div key={r.id} className={`panel rise flex flex-wrap items-center gap-x-6 gap-y-3 px-5 py-4 hover:border-copper/40 transition-colors`} style={{ animationDelay: `${Math.min(i * 60, 400)}ms` }}>
           <div className="min-w-[180px] flex-1">
             <Link href={`/runs/${r.id}`} className="text-[14px] font-semibold hover:text-copper-bright transition-colors">
@@ -45,13 +50,22 @@ export function RunsList({ lang, runs }: { lang: Lang; runs: Run[] }) {
               <span className="chip-dot" style={{ background: STATUS_COLOR[r.status] }} />
               {t(lang, r.status === 'done' ? 'status_done' : r.status === 'error' ? 'status_error' : 'status_processing')}
             </span>
-            <a href={`/api/runs/${r.id}/excel`} className="btn btn-ghost !px-3" title={t(lang, 'download_excel')}>
-              ⤓ XLSX
-            </a>
+            {exportAllowed ? (
+              <a href={`/api/runs/${r.id}/excel`} className="btn btn-ghost !px-3" title={t(lang, 'download_excel')}>
+                ⤓ XLSX
+              </a>
+            ) : (
+              <span className="btn btn-ghost !px-3 opacity-50" title={lang === 'tr'
+                ? 'Cevap Excel’iyle doğrulama gerekli'
+                : 'Answer-workbook validation required'}>
+                ⛔ XLSX
+              </span>
+            )}
             <button onClick={() => del(r.id)} className="btn btn-ghost !px-2.5 hover:!text-danger" title={t(lang, 'delete_run')}>✕</button>
           </div>
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

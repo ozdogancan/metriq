@@ -47,3 +47,4 @@ next-env.d.ts
 
 # APS deney harness'i + musteri model verileri (repoya girmez)
 _aps/
+/.swc

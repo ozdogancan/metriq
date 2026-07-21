@@ -84,6 +84,8 @@ export function CalibrationsPanel({ lang, initial }: { lang: Lang; initial: Cali
                 {cal.rules.vocab === 'hygienic' ? t(lang, 'vocab_hygienic') : t(lang, 'vocab_steel')}
                 {` · v${cal.version ?? 1}`}
                 {cal.learnedFrom.length > 0 && ` · ${cal.learnedFrom.length} ${t(lang, 'learned_from')}`}
+                {(cal.rules.itemCorrections ?? []).filter(rule => rule.status === 'candidate').length > 0
+                  && ` · ${(cal.rules.itemCorrections ?? []).filter(rule => rule.status === 'candidate').length} ${tr ? 'aday kural' : 'candidate rule(s)'}`}
                 {' · '}{new Date(cal.updatedAt).toLocaleDateString(lang === 'tr' ? 'tr-TR' : 'en-GB')} {t(lang, 'updated')}
               </div>
             </div>
@@ -158,6 +160,62 @@ function RulesEditor({ lang, cal, onChange }: { lang: Lang; cal: Calibration; on
               </span>
             ))}
           </div>
+        </div>
+      )}
+      {(r.itemCorrections?.length ?? 0) > 0 && (
+        <div className="space-y-2 border-t border-line pt-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-data text-[11px] text-muted">
+              {lang === 'tr' ? 'Öğrenilen kesin kurallar' : 'Learned exact rules'}
+            </span>
+            <span className="chip font-data text-[10px]">
+              {(r.itemCorrections ?? []).filter(rule => rule.status === undefined || rule.status === 'active').length} {lang === 'tr' ? 'aktif' : 'active'}
+            </span>
+            {(r.itemCorrections ?? []).some(rule => rule.status === 'candidate') && (
+              <span className="chip font-data text-[10px] text-copper-bright">
+                {(r.itemCorrections ?? []).filter(rule => rule.status === 'candidate').length} {lang === 'tr' ? 'kanıt bekliyor' : 'awaiting evidence'}
+              </span>
+            )}
+          </div>
+          {(r.itemCorrections ?? []).filter(rule => rule.status !== 'rejected').slice(0, 50).map(rule => {
+            const match = [rule.match.line, rule.match.code,
+              `${rule.match.s1 ?? '?'}${rule.match.s2 ? `×${rule.match.s2}` : ''}″`, rule.match.unit,
+              rule.match.sub].filter(Boolean).join(' · ');
+            const changes = Object.entries(rule.set).map(([key, value]) => `${key}=${String(value)}`).join(' · ');
+            const active = rule.status === undefined || rule.status === 'active';
+            return (
+              <div key={rule.id} className="rounded-lg border border-line px-3 py-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={`chip font-data text-[10px] ${active ? 'text-mint' : 'text-copper-bright'}`}>
+                    {active ? (lang === 'tr' ? 'aktif' : 'active') : (lang === 'tr' ? 'aday' : 'candidate')}
+                  </span>
+                  <span className="font-data text-[10.5px] text-ink">{match}</span>
+                  <span className="font-data text-[10.5px] text-muted">→ {changes}</span>
+                  {!active && (
+                    <span className="font-data text-[10px] text-muted">
+                      {rule.evidenceCount}/{rule.minEvidence ?? 2} {lang === 'tr' ? 'bağımsız kanıt' : 'independent evidence'}
+                    </span>
+                  )}
+                  <div className="ml-auto flex gap-1.5">
+                    {!active && (
+                      <button type="button" className="btn btn-ghost !px-2 !py-1 !text-[10px]"
+                        onClick={() => set('itemCorrections', r.itemCorrections!.map(item => item.id === rule.id
+                          ? { ...item, status: 'active' as const }
+                          : item))}>
+                        {lang === 'tr' ? 'Onayla' : 'Approve'}
+                      </button>
+                    )}
+                    <button type="button" className="btn btn-ghost !px-2 !py-1 !text-[10px] hover:!text-danger"
+                      onClick={() => set('itemCorrections', r.itemCorrections!.map(item => item.id === rule.id
+                        ? { ...item, status: 'rejected' as const }
+                        : item))}>
+                      {active ? (lang === 'tr' ? 'Devre dışı' : 'Disable') : (lang === 'tr' ? 'Reddet' : 'Reject')}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
