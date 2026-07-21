@@ -1295,10 +1295,6 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, freshId, onApplie
   );
 }
 
-function tierLabel(tier: string, lang: Lang): string {
-  if (lang === 'tr') return tier;
-  return tier === 'basit' ? 'simple' : tier === 'orta' ? 'medium' : tier === 'karmaşık' ? 'complex' : tier;
-}
 
 function AiInsight({ lang, runId }: { lang: Lang; runId: string }) {
   const [state, setState] = useState<'idle' | 'loading' | 'done' | 'hidden'>('idle');

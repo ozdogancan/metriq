@@ -176,13 +176,28 @@ export function ModelViewerPanel({ lang, runId, open, focusRowIds, focusLabel, o
     return () => clearTimeout(t);
   }, [open, state, applyFocus]);
 
-  // ESC ile kapat
+  // ESC ile kapat — CAPTURE fazında: viewer'ın kendi keydown dinleyicileri
+  // olayı yutamadan biz görürüz
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
   }, [open, onClose]);
+
+  // Close butonu NATIVE capture-phase pointerdown ile bağlanır: Autodesk viewer
+  // (veya başka bir kütüphane) React'in delege click'ini yutsa bile kapanış
+  // GARANTİDİR. ("Close'a basıyorum kapanmıyor" gerçek vakasının çözümü.)
+  const closeBtnRef = useRef<HTMLButtonElement>(null);
+  const onCloseRef = useRef(onClose);
+  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
+  useEffect(() => {
+    const el = closeBtnRef.current;
+    if (!el) return;
+    const h = (e: Event) => { e.stopPropagation(); onCloseRef.current(); };
+    el.addEventListener('pointerdown', h, true);
+    return () => el.removeEventListener('pointerdown', h, true);
+  }, []);
 
   function switchMode(m: ViewMode) {
     setMode(m);
@@ -195,28 +210,34 @@ export function ModelViewerPanel({ lang, runId, open, focusRowIds, focusLabel, o
       aria-label={tr ? '3B model görüntüleyici' : '3D model viewer'}>
       <button type="button" className="flex-1 cursor-default bg-black/60" onClick={onClose} aria-label={tr ? 'kapat' : 'close'} />
       <div className="flex h-full w-full max-w-[880px] flex-col border-l border-line bg-[var(--color-panel)] shadow-2xl">
-        <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-2.5">
-          <span className="text-[12px] font-semibold uppercase tracking-wider text-copper">
-            ◎ {tr ? 'Modelde göster' : 'Show in model'}
-          </span>
-          <span className="max-w-[300px] truncate font-data text-[11.5px] text-muted" title={focusLabel}>{focusLabel}</span>
-          {/* görünüm modu: izole / bağlamda */}
-          <span className="ml-1 flex overflow-hidden rounded border border-line font-data text-[10.5px]">
-            {(['isolate', 'context'] as const).map(m => (
-              <button key={m} type="button" onClick={() => switchMode(m)}
-                title={m === 'isolate'
-                  ? (tr ? 'Yalnız bu satırın parçaları' : 'Only this row\'s parts')
-                  : (tr ? 'Tüm tesis + parçalar bakır vurgulu — hattın neresinde görün' : 'Whole plant + parts highlighted — see where they sit')}
-                className={`px-2 py-1 transition-colors ${mode === m ? 'bg-copper/20 text-copper-bright' : 'text-muted hover:text-ink'}`}>
-                {m === 'isolate' ? (tr ? 'izole' : 'isolate') : (tr ? 'bağlamda' : 'in context')}
-              </button>
-            ))}
-          </span>
-          {focusInfo && <span className="font-data text-[10.5px] text-mint">{focusInfo}</span>}
-          <button type="button" onClick={() => applyFocus(null)} className="btn btn-ghost ml-auto !text-[11px]">
+        <div className="flex items-center gap-2 border-b border-line px-4 py-2.5">
+          {/* sol taraf: sıkışınca kısalır, sağdaki kontrolleri asla itmez */}
+          <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+            <span className="shrink-0 text-[12px] font-semibold uppercase tracking-wider text-copper">
+              ◎ {tr ? 'Modelde göster' : 'Show in model'}
+            </span>
+            <span className="min-w-0 truncate font-data text-[11.5px] text-muted" title={focusLabel}>{focusLabel}</span>
+            {/* görünüm modu: izole / bağlamda */}
+            <span className="flex shrink-0 overflow-hidden rounded border border-line font-data text-[10.5px]">
+              {(['isolate', 'context'] as const).map(m => (
+                <button key={m} type="button" onClick={() => switchMode(m)}
+                  title={m === 'isolate'
+                    ? (tr ? 'Yalnız bu satırın parçaları' : 'Only this row\'s parts')
+                    : (tr ? 'Tüm tesis + parçalar bakır vurgulu — hattın neresinde görün' : 'Whole plant + parts highlighted — see where they sit')}
+                  className={`px-2 py-1 transition-colors ${mode === m ? 'bg-copper/20 text-copper-bright' : 'text-muted hover:text-ink'}`}>
+                  {m === 'isolate' ? (tr ? 'izole' : 'isolate') : (tr ? 'bağlamda' : 'in context')}
+                </button>
+              ))}
+            </span>
+            {focusInfo && <span className="hidden shrink-0 font-data text-[10.5px] text-mint sm:inline">{focusInfo}</span>}
+          </div>
+          {/* sağ taraf: sabit kontroller */}
+          <button type="button" onClick={() => applyFocus(null)} className="btn btn-ghost shrink-0 !text-[11px]">
             {tr ? 'tüm model' : 'whole model'}
           </button>
-          <button type="button" onClick={onClose} className="btn !text-[11px]">✕ {tr ? 'Kapat' : 'Close'} (Esc)</button>
+          <button ref={closeBtnRef} type="button" onClick={onClose} className="btn shrink-0 !text-[11px]">
+            ✕ {tr ? 'Kapat' : 'Close'} (Esc)
+          </button>
         </div>
         <div className="relative flex-1">
           <div ref={holderRef} className="absolute inset-0" />
