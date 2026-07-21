@@ -25,6 +25,27 @@ export function UploadZone({ lang }: { lang: Lang }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [projectName, setProjectName] = useState('');
+  // büyük dosyada "donmuş" hissini bitiren gerçek yükleme yüzdesi (XHR progress)
+  const [progress, setProgress] = useState<number | null>(null);
+
+  // fetch upload-progress vermez — imzalı PUT'u XHR ile yapıp yüzdeyi akıt
+  function putWithProgress(url: string, file: File, token: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('PUT', url);
+      xhr.setRequestHeader('content-type', 'application/octet-stream');
+      xhr.setRequestHeader('authorization', `Bearer ${token}`);
+      xhr.setRequestHeader('x-upsert', 'true');
+      xhr.upload.onprogress = e => {
+        if (e.lengthComputable) setProgress(Math.round((e.loaded / e.total) * 100));
+      };
+      xhr.onload = () => xhr.status >= 200 && xhr.status < 300
+        ? resolve()
+        : reject(new HttpError(xhr.status, 'storage upload failed'));
+      xhr.onerror = () => reject(new TypeError('network'));
+      xhr.send(file);
+    });
+  }
 
   async function handleFile(file: File) {
     if (!file.name.toLowerCase().endsWith('.nwd')) {
@@ -52,12 +73,9 @@ export function UploadZone({ lang }: { lang: Lang }) {
         if (!s.ok) throw new HttpError(s.status, 'upload-url failed');
         const su = await s.json();
         if (su.mode === 'supabase') {
-          const up = await fetch(su.uploadUrl, {
-            method: 'PUT',
-            headers: { 'content-type': 'application/octet-stream', authorization: `Bearer ${su.token}`, 'x-upsert': 'true' },
-            body: file,
-          });
-          if (!up.ok) throw new HttpError(up.status, 'storage upload failed');
+          setProgress(0);
+          await putWithProgress(su.uploadUrl, file, su.token);
+          setProgress(100);
           res = await fetch('/api/runs', {
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ ...meta, storagePath: su.path, runId: su.runId, fileSize: file.size }),
@@ -76,6 +94,7 @@ export function UploadZone({ lang }: { lang: Lang }) {
     } catch (e) {
       setError(t(lang, errorKey(e)));
       setBusy(false);
+      setProgress(null);
     }
   }
 
@@ -120,9 +139,19 @@ export function UploadZone({ lang }: { lang: Lang }) {
           <>
             <div className="flex items-center gap-2 font-data text-[13px] text-copper-bright">
               <span className="chip-dot pulse bg-copper-bright" />
-              {t(lang, 'upload_processing')}
+              {progress !== null && progress < 100
+                ? (tr ? `Yükleniyor… %${progress}` : `Uploading… ${progress}%`)
+                : t(lang, 'upload_processing')}
             </div>
-            <div className="font-data text-[11px] text-muted">zlib → components → MTO</div>
+            {/* büyük dosyada gerçek ilerleme çubuğu — "donmuş" hissi biter */}
+            {progress !== null && progress < 100 ? (
+              <div className="h-1.5 w-64 overflow-hidden rounded border border-line">
+                <div className="h-full bg-[var(--color-copper)] transition-[width] duration-200"
+                  style={{ width: `${progress}%` }} />
+              </div>
+            ) : (
+              <div className="font-data text-[11px] text-muted">zlib → components → MTO</div>
+            )}
           </>
         ) : (
           <>

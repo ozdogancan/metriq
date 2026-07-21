@@ -59,6 +59,17 @@ export async function viewerToken(): Promise<{ access_token: string; expires_in:
   return { access_token: d.access_token, expires_in: d.expires_in ?? 3600 };
 }
 
+// Çeviri işini yeniden kuyruğa al (x-ads-force) — Autodesk motoru bazen geçici
+// çöker (-777 InternalFailure); tek retry gerçek vakada (ENQ-129, 124MB) kurtardı.
+export async function apsRetryTranslate(urn: string): Promise<boolean> {
+  const job = await authed('/modelderivative/v2/designdata/job', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-ads-force': 'true' },
+    body: JSON.stringify({ input: { urn }, output: { formats: [{ type: 'svf', views: ['3d'] }] } }),
+  });
+  return job.ok;
+}
+
 export function toUrn(objectId: string): string {
   return Buffer.from(objectId).toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
 }

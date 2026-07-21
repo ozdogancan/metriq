@@ -41,6 +41,7 @@ export interface RunApsJob {
   guid?: string;
   submittedAt: string;
   claimedUntil?: string; // ready-tamamlama kilidi: çift instance aynı işi bitirmesin
+  retriedAt?: string;    // çeviri-hatasında tek otomatik yeniden deneme (129: -777 retry ile kurtuldu)
 }
 
 export interface Run {

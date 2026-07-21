@@ -277,7 +277,7 @@ export async function POST(req: NextRequest) {
       const file = fd.get('file') as File | null;
       if (!file) return NextResponse.json({ error: 'file missing' }, { status: 400 });
       if (!isAllowedNwdSize(file.size)) {
-        return NextResponse.json({ error: 'NWD dosyası 50 MB sınırını aşıyor.' }, { status: 413 });
+        return NextResponse.json({ error: 'NWD dosyası 200 MB sınırını aşıyor.' }, { status: 413 });
       }
       const rawMeta = (() => {
         try { return JSON.parse(String(fd.get('meta') || '{}')) as unknown; }
@@ -316,7 +316,7 @@ export async function POST(req: NextRequest) {
       fileSize = buf.length;
       if (!isAllowedNwdSize(fileSize)) {
         await cleanupUnclaimedFile();
-        return NextResponse.json({ error: 'NWD dosyası 50 MB sınırını aşıyor.' }, { status: 413 });
+        return NextResponse.json({ error: 'NWD dosyası 200 MB sınırını aşıyor.' }, { status: 413 });
       }
       if (!hasNwdDataMarker(buf)) {
         await cleanupUnclaimedFile();

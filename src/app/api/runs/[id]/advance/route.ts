@@ -4,7 +4,7 @@
 // + bildirim burada tamamlanır (processRun'ın bulut karşılığı).
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
-import { apsAdvance } from '@/lib/aps';
+import { apsAdvance, apsRetryTranslate } from '@/lib/aps';
 import { extractFromApsProps } from '@/lib/parser/aps-extract';
 import { getRun, saveRows, saveSteel, updateRunMeta, addNotification, listCalibrations, claimApsRun, putRunArtifact } from '@/lib/store';
 import { sendPush } from '@/lib/notify';
@@ -71,6 +71,18 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     }
 
     if (state.phase === 'failed') {
+      // Autodesk motoru bazen geçici çöker (-777) — TEK otomatik yeniden deneme
+      // (gerçek vaka: 124MB ENQ-129 ilk çeviri failed, retry success)
+      if (!run.aps.retriedAt) {
+        const ok = await apsRetryTranslate(run.aps.urn).catch(() => false);
+        if (ok) {
+          await updateRunMeta(id, {
+            aps: { ...run.aps, retriedAt: new Date().toISOString() },
+            progress: stageSet(stages, 'scan', 'active', { 'bulut': 'çeviri yeniden denendi (otomatik)' }),
+          });
+          return NextResponse.json({ phase: 'translating', progress: 'retry' });
+        }
+      }
       await updateRunMeta(id, { status: 'error', error: state.message, progress: stages });
       const title = lang === 'tr' ? `Metraj başarısız: ${run.projectName}` : `Take-off failed: ${run.projectName}`;
       await addNotification({

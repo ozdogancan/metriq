@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'node:crypto';
-import { isSupabase, reserveStoredUpload, signedUploadUrl } from '@/lib/store';
-import { isAllowedNwdSize, isSafeNwdFileName } from '@/lib/upload-policy';
+import { ensureBucketLimit, isSupabase, reserveStoredUpload, signedUploadUrl } from '@/lib/store';
+import { MAX_NWD_BYTES, isAllowedNwdSize, isSafeNwdFileName } from '@/lib/upload-policy';
 import { requireApiSession } from '@/lib/session';
 
 export const runtime = 'nodejs';
@@ -17,9 +17,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Geçersiz NWD dosya adı.' }, { status: 400 });
     }
     if (!isAllowedNwdSize(fileSize)) {
-      return NextResponse.json({ error: 'NWD dosyası 50 MB sınırını aşıyor.' }, { status: 413 });
+      return NextResponse.json({ error: 'NWD dosyası 200 MB sınırını aşıyor.' }, { status: 413 });
     }
     if (!isSupabase) return NextResponse.json({ mode: 'local' });
+    await ensureBucketLimit(MAX_NWD_BYTES); // bucket sınırını politikayla hizala (fail-soft)
     const runId = randomUUID();
     const signed = await signedUploadUrl(runId, fileName);
     if (!signed) return NextResponse.json({ mode: 'local' });

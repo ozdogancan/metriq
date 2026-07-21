@@ -613,6 +613,22 @@ export async function fetchStoredFile(key: string): Promise<Buffer> {
   return fs.readFile(key);
 }
 
+// Bucket dosya-boyu sınırını politika ile hizala (kendi-kendini-onaran):
+// proje-geneli tavan Dashboard'dan yükseltildiği an ilk yükleme bunu başarır.
+// Global tavan hâlâ düşükse sessizce başarısız olur — yükleme akışını bozmaz.
+let bucketLimitSynced = false;
+export async function ensureBucketLimit(maxBytes: number): Promise<void> {
+  if (!isSupabase || bucketLimitSynced) return;
+  try {
+    const { error } = await client().storage.updateBucket(BUCKET, {
+      public: false,
+      fileSizeLimit: maxBytes,
+      allowedMimeTypes: ['application/octet-stream'],
+    });
+    if (!error) bucketLimitSynced = true;
+  } catch { /* global tavan izin verince kendiliğinden geçer */ }
+}
+
 export async function signedUploadUrl(runId: string, fileName: string): Promise<{ path: string; token: string } | null> {
   if (!isSupabase) return null;
   if (!isUuid(runId) || !isSafeNwdFileName(fileName)) throw new Error('unsafe storage key');
