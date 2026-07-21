@@ -78,3 +78,35 @@ assert.equal(isCorrectionRuleActive({
 }), true);
 
 console.log('calibration learning: distinct-run evidence gate and legacy compatibility verified');
+
+// Kapsam onerisi: "zaten buluyoruz ama teklife katmiyoruz" tespiti
+{
+  const { inferScopeSuggestions } = await import('../src/lib/calibration-core.ts');
+  const { DEFAULT_RULES } = await import('../src/lib/types.ts');
+  const base = DEFAULT_RULES['steel-plant']; // includeValvesInMain=false, includeFasteners=false
+  const ourRows = [
+    { id: 'a', line: 'L1', code: 'VALVE', sub: '', s1: 2, s2: 0, qty: 3, unit: 'EA', remark: '', scope: 'INFO' },
+    { id: 'b', line: '*', code: 'GASKET', sub: '', s1: 2, s2: 0, qty: 5, unit: 'EA', remark: '', scope: 'INFO' },
+    { id: 'c', line: 'L1', code: '90 BEND', sub: '', s1: 2, s2: 0, qty: 9, unit: 'EA', remark: '', scope: 'MAIN' },
+  ];
+  const answer = [
+    { code: 'VALVE', s1: 2, s2: 0, qty: 4, unit: 'EA' },   // min(3,4)=3 kurtarilabilir
+    { code: 'GASKET', s1: 2, s2: 0, qty: 2, unit: 'EA' },  // min(5,2)=2
+    { code: '90 BEND', s1: 2, s2: 0, qty: 9, unit: 'EA' },
+  ];
+  const s = inferScopeSuggestions(ourRows, answer, base);
+  const valve = s.find(x => x.rule === 'includeValvesInMain');
+  const fast = s.find(x => x.rule === 'includeFasteners');
+  assert.ok(valve && valve.recoverable === 3, 'vana onerisi min(bizde,cevapta) saymali');
+  assert.ok(fast && fast.recoverable === 2, 'baglanti onerisi min saymali');
+
+  // Kural ZATEN acikken oneri gelmemeli
+  assert.equal(inferScopeSuggestions(ourRows, answer, { ...base, includeValvesInMain: true, includeFasteners: true }).length, 0,
+    'acik kurallar icin oneri uretilmemeli');
+  // Cevap istemiyorsa oneri gelmemeli (yanlis pozitif yok)
+  assert.equal(inferScopeSuggestions(ourRows, [{ code: '90 BEND', s1: 2, s2: 0, qty: 9, unit: 'EA' }], base).length, 0,
+    'cevap istemiyorsa oneri uretilmemeli');
+  // MAIN satirlar oneri uretmemeli (zaten sayiliyor)
+  assert.equal(inferScopeSuggestions([ourRows[2]], answer, base).length, 0, 'MAIN satirlar oneri uretmemeli');
+}
+console.log('scope suggestions: evidence-bounded, no false positives verified');

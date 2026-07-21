@@ -167,6 +167,9 @@ export const CalibrationApplySchema = z.object({
   expectedProfileVersion: z.number().int().nonnegative(),
   profileName: z.string().trim().min(1).max(120),
   decisions: z.array(CalibrationDecisionSchema).min(1).max(1000),
+  // Kullanıcının onayladığı kapsam kuralları ("vanaları da teklife kat" gibi).
+  // Yalnız beyaz listedeki bayraklar; serbest kural enjeksiyonu yok.
+  acceptScopeRules: z.array(z.enum(['includeValvesInMain', 'includeFasteners'])).max(4).optional(),
 }).superRefine((value, ctx) => {
   if (!value.profileId && value.expectedProfileVersion !== 0) {
     ctx.addIssue({ code: 'custom', path: ['expectedProfileVersion'], message: 'yeni profil sürümü 0 olmalı' });

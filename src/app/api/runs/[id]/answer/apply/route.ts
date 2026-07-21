@@ -40,6 +40,9 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     comparisonId: body.comparisonId, profileId: body.profileId ?? null,
     expectedProfileVersion: body.expectedProfileVersion, profileName: body.profileName,
     decisions: body.decisions,
+    // kapsam kuralları da imzaya girer: aynı anahtarla farklı kural seti
+    // gönderilirse replay sayılıp sessizce yutulmamalı
+    acceptScopeRules: [...(body.acceptScopeRules ?? [])].sort(),
   })).digest('hex');
 
   try {
@@ -109,6 +112,12 @@ export async function POST(req: NextRequest, ctx: Ctx) {
     // Kurallar kararlardan türetilir. Geniş etkili dönüşümler bağımsız model
     // kanıtı biriktirene kadar candidate kalır; yalnız active kurallar uygulanır.
     const derived = deriveCalibrationRules(baseRules, comparison.diff, decisions, () => randomUUID(), id);
+    // Kapsam kuralları: kullanıcı "bunları da teklife kat" dediyse bayrağı aç.
+    // Yalnız sistemin O KARŞILAŞTIRMADA gerçekten önerdikleri kabul edilir —
+    // istemci keyfi bayrak gönderemez.
+    const offered = new Set((comparison.diff.scopeSuggestions ?? []).map(s => s.rule));
+    const acceptedScopeRules = (body.acceptScopeRules ?? []).filter(rule => offered.has(rule));
+    for (const rule of acceptedScopeRules) derived.rules[rule] = true;
     const learnedFrom = [...new Set([...(target?.learnedFrom ?? []), id])];
 
     const result = await applyAnswerCalibration(identity, {

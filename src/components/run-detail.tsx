@@ -1015,6 +1015,11 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, freshId, onApplie
   const tr = lang === 'tr';
   const [showAll, setShowAll] = useState(false);
   const [filter, setFilterState] = useState<'diffs' | AnswerRowStatus>('diffs');
+  // "Bunları zaten buluyoruz, teklife katalım mı?" — varsayılan İŞARETLİ:
+  // sistem bunu ancak cevap gerçekten istediğinde önerir.
+  const scopeOffers = answer.scopeSuggestions ?? [];
+  const [acceptedScopes, setAcceptedScopes] = useState<Set<string>>(
+    () => new Set(scopeOffers.map(s => s.rule)));
   const [busy, setBusy] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
   const scrolledForRef = useRef<string | null>(null);
@@ -1096,6 +1101,7 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, freshId, onApplie
           ...(targetProfile ? { profileId: targetProfile.id, expectedProfileVersion: targetProfile.version ?? 1 } : { expectedProfileVersion: 0 }),
           profileName: profileName.trim(),
           decisions: inputs,
+          acceptScopeRules: [...acceptedScopes],
         }),
       });
       const d = await res.json();
@@ -1200,6 +1206,46 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, freshId, onApplie
           <span className="text-[12px] font-semibold uppercase tracking-wider text-copper">
             2 · {tr ? 'Karar ver' : 'Decide'}
           </span>
+
+          {/* Kapsam önerisi: "bunu zaten buluyoruz ama teklife katmıyoruz" */}
+          {scopeOffers.length > 0 && (
+            <div className="mt-2 rounded border px-3.5 py-2.5"
+              style={{
+                borderColor: 'color-mix(in oklab, var(--color-copper) 45%, transparent)',
+                background: 'color-mix(in oklab, var(--color-copper) 8%, transparent)',
+              }}>
+              <p className="font-data text-[11.5px]">
+                💡 {tr
+                  ? 'Bu kalemleri modelde ZATEN buluyoruz ama teklife katmıyorduk — Excel\'in istiyor:'
+                  : 'We already find these in the model but were not counting them — your Excel wants them:'}
+              </p>
+              <div className="mt-2 flex flex-col gap-1.5">
+                {scopeOffers.map(s => (
+                  <label key={s.rule} className="flex cursor-pointer items-center gap-2 font-data text-[11.5px]">
+                    <input type="checkbox" checked={acceptedScopes.has(s.rule)}
+                      onChange={e => setAcceptedScopes(prev => {
+                        const next = new Set(prev);
+                        if (e.target.checked) next.add(s.rule); else next.delete(s.rule);
+                        return next;
+                      })}
+                      className="!h-3.5 !w-3.5 !w-auto accent-[var(--color-copper)]" />
+                    <span>
+                      {s.rule === 'includeValvesInMain'
+                        ? (tr ? 'Vanaları teklife kat' : 'Include valves in the quote')
+                        : (tr ? 'Conta/cıvatayı teklife kat' : 'Include gaskets/bolts in the quote')}
+                      <span className="text-mint"> · +{s.recoverable} {tr ? 'kalem eşleşecek' : 'items will match'}</span>
+                      <span className="text-muted"> ({s.codes.join(', ')})</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <p className="mt-1.5 font-data text-[10px] text-muted">
+                {tr
+                  ? 'İşaretli kalırsa kural profile yazılır ve bu müşterinin sonraki dosyalarında otomatik uygulanır.'
+                  : 'If left checked, the rule is saved to the profile and auto-applies to this client\'s next files.'}
+              </p>
+            </div>
+          )}
           <div className="mt-2 grid gap-2 sm:grid-cols-2">
             <button onClick={acceptAllAndCalibrate} disabled={busy || dirty}
               className="btn btn-primary !h-auto !items-start !px-4 !py-3 text-left">

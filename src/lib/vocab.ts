@@ -136,26 +136,31 @@ export function applyRules(parsed: ParseResult, rules: CalibrationRules): {
     }
   });
 
-  if (rules.includeFasteners) {
+  {
     const f = parsed.fasteners;
+    // Bağlantı elemanları ARTIK HER ZAMAN üretilir; kural yalnız KAPSAMI belirler
+    // (MAIN = teklife girer, INFO = bulunundu ama sayılmıyor). Böylece cevap
+    // Excel'i bunları istediğinde sistem "bizde var, bilgi bölümünde" diyebilir
+    // ve kuralı kendisi önerebilir. aps-extract zaten bu semantikte.
+    const fastenerScope: 'MAIN' | 'INFO' = rules.includeFasteners ? 'MAIN' : 'INFO';
     // Müşteri listeleri contayı ÇAP BAZINDA sayar; boyutsuz toplam satırı
     // karşılaştırma anahtarında (kod|çap|birim) hiçbir zaman eşleşemez.
     // Boyut kırılımı varsa onu kullan (ENQ-237'de cevapla birebir doğrulandı).
     const sizedGaskets = Object.entries(f.bySize?.gaskets ?? {});
     if (sizedGaskets.length) {
       for (const [nps, n] of sizedGaskets) {
-        push('*', 'GASKET', '', Number(nps), 0, n, 'EA', 'bağlantı başına 1', 'MAIN');
+        push('*', 'GASKET', '', Number(nps), 0, n, 'EA', 'bağlantı başına 1', fastenerScope);
       }
     } else if (f.gaskets) {
-      push('*', 'GASKET', '', null, 0, f.gaskets, 'EA', 'bağlantı başına 1', 'MAIN');
+      push('*', 'GASKET', '', null, 0, f.gaskets, 'EA', 'bağlantı başına 1', fastenerScope);
     }
     const sizedBolts = Object.entries(f.bySize?.boltSets ?? {});
     if (sizedBolts.length) {
-      for (const [nps, n] of sizedBolts) push('*', 'BOLT SET', '', Number(nps), 0, n, 'EA', '', 'MAIN');
+      for (const [nps, n] of sizedBolts) push('*', 'BOLT SET', '', Number(nps), 0, n, 'EA', '', fastenerScope);
     } else if (f.boltSets) {
-      push('*', 'BOLT SET', '', null, 0, f.boltSets, 'EA', '', 'MAIN');
+      push('*', 'BOLT SET', '', null, 0, f.boltSets, 'EA', '', fastenerScope);
     }
-    if (f.stubEnds) push('*', 'STUB END', '', null, 0, f.stubEnds, 'EA', '', 'MAIN');
+    if (f.stubEnds) push('*', 'STUB END', '', null, 0, f.stubEnds, 'EA', '', fastenerScope);
   }
 
   // öğrenilen kapsam-dışı hatlar: satırları silmek yerine INFO'ya indir (izlenebilir kalsın)

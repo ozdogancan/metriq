@@ -2,8 +2,10 @@
 // Sonuç run.answer'a kalıcı yazılır + öğrenme günlüğüne run_feedback olayı düşer.
 import { NextRequest, NextResponse } from 'next/server';
 import { createHash, randomUUID } from 'node:crypto';
-import { getRun, getRows, recordAnswerComparison } from '@/lib/store';
+import { findLatestCalibration, getRun, getRows, recordAnswerComparison } from '@/lib/store';
 import { parseAnswerXlsx, compareAnswer } from '@/lib/answer-compare';
+import { inferScopeSuggestions } from '@/lib/calibration-core';
+import { DEFAULT_RULES } from '@/lib/types';
 import { MAX_ANSWER_XLSX_BYTES } from '@/lib/upload-policy';
 import { isApiDenial, requireApiIdentity } from '@/lib/session';
 
@@ -43,6 +45,17 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       comparisonId,
       baseRowsRevision: run.rowRevision ?? 0,
     });
+    // "Zaten buluyoruz ama teklife katmıyoruz" tespiti: karşılaştırma yalnız
+    // MAIN'i görür, INFO satırları cevapta saf 'eksik' gibi görünürdü.
+    const activeRules = run.calibrationSnapshot?.rules
+      ?? (await findLatestCalibration(identity, {
+        vocab: run.vocab,
+        modelFamily: run.aps ? 'aps' : 'plant3d-local',
+        clientKey: 'default',
+      }))?.rules
+      ?? DEFAULT_RULES[run.vocab] ?? DEFAULT_RULES['steel-plant'];
+    const scopeSuggestions = inferScopeSuggestions(ours, answerRows, activeRules);
+    if (scopeSuggestions.length) diff.scopeSuggestions = scopeSuggestions;
     await recordAnswerComparison(identity, {
       id: comparisonId,
       runId: id,

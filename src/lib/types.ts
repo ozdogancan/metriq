@@ -163,6 +163,16 @@ export interface AnswerDiff {
     quantityWeightedOverlapByUnit: Record<Unit, AnswerQuantityOverlap>;
   };
   rows: AnswerDiffRow[];
+  /**
+   * "Bunu zaten buluyoruz ama teklife katmıyoruz" önerileri. Karşılaştırma
+   * yalnız MAIN'i görür; INFO'daki vana/conta cevapta saf 'eksik' gibi
+   * görünürdü. Kullanıcı tek tıkla kuralı öğretir.
+   */
+  scopeSuggestions?: Array<{
+    rule: 'includeValvesInMain' | 'includeFasteners';
+    recoverable: number;
+    codes: string[];
+  }>;
   createdAt: string;
 }
 

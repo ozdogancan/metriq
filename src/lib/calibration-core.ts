@@ -15,6 +15,73 @@ export interface CalibrationDecisionInput {
   custom?: AnswerValue;
 }
 
+/**
+ * Kapsam önerisi: "bu kalemi zaten buluyoruz ama teklife katmıyoruz".
+ * Karşılaştırma yalnız MAIN satırları görür; INFO'daki vana/conta/cıvata
+ * cevap tarafında saf 'eksik' gibi görünür ve kullanıcı motorun beceriksiz
+ * olduğunu sanır. Bu öneri o yanılgıyı kapatır ve kuralı öğrenilebilir yapar.
+ */
+export interface ScopeSuggestion {
+  rule: 'includeValvesInMain' | 'includeFasteners';
+  /** kuralı açınca eşleşmeye başlayacak kalem adedi (min(bizde, cevapta)) */
+  recoverable: number;
+  /** kanıt kodları — kullanıcıya "şunlar" diye gösterilir */
+  codes: string[];
+}
+
+const VALVE_CODES = new Set(['VALVE', 'MV', 'CV', 'STRAINER']);
+const FASTENER_CODES = new Set(['GASKET', 'BOLT SET', 'BOLT', 'STUB END']);
+
+/**
+ * INFO kapsamındaki satırlarımızı cevabın istediği kalemlerle eşleştirir.
+ * Rakam uydurmaz: yalnız ZATEN çıkardığımız satırların kapsamını önerir ve
+ * kazancı min(bizdeki, cevaptaki) olarak muhafazakâr sayar.
+ */
+export function inferScopeSuggestions(
+  ourRows: MtoRow[],
+  answerRows: Array<{ code: string; s1: number | null; s2: number; qty: number; unit: 'M' | 'EA' }>,
+  rules: CalibrationRules,
+): ScopeSuggestion[] {
+  const key = (code: string, s1: number | null, s2: number, unit: string) =>
+    `${normCode(code)}|${s1 ?? '?'}|${s2}|${unit}`;
+  const answerByKey = new Map<string, number>();
+  const answerCodes = new Set<string>();
+  for (const row of answerRows) {
+    answerCodes.add(normCode(row.code));
+    const k = key(row.code, row.s1, row.s2, row.unit);
+    answerByKey.set(k, (answerByKey.get(k) ?? 0) + row.qty);
+  }
+
+  const build = (
+    rule: ScopeSuggestion['rule'],
+    codes: Set<string>,
+    enabled: boolean,
+  ): ScopeSuggestion | null => {
+    if (enabled) return null; // zaten açık
+    const hidden = ourRows.filter(r => r.scope === 'INFO' && codes.has(normCode(r.code)));
+    if (!hidden.length) return null;
+    const hiddenByKey = new Map<string, number>();
+    for (const r of hidden) {
+      const k = key(r.code, r.s1, r.s2, r.unit);
+      hiddenByKey.set(k, (hiddenByKey.get(k) ?? 0) + r.qty);
+    }
+    let recoverable = 0;
+    for (const [k, qty] of hiddenByKey) {
+      const want = answerByKey.get(k);
+      if (want) recoverable += Math.min(qty, want);
+    }
+    if (recoverable < 1) return null;
+    const evidence = [...new Set(hidden.map(r => normCode(r.code)))].filter(c => answerCodes.has(c));
+    if (!evidence.length) return null;
+    return { rule, recoverable: Math.round(recoverable), codes: evidence.sort() };
+  };
+
+  return [
+    build('includeValvesInMain', VALVE_CODES, rules.includeValvesInMain),
+    build('includeFasteners', FASTENER_CODES, rules.includeFasteners),
+  ].filter((value): value is ScopeSuggestion => value !== null);
+}
+
 export interface DerivedRulesResult {
   rules: CalibrationRules;
   activatedRules: number;
