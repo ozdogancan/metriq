@@ -101,7 +101,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       await updateRunMeta(id, { calibrationId: appliedId }); // izlenebilirlik: hangi profil uygulandı
       run.calibrationId = appliedId;
     }
-    const ex = extractFromApsProps(state.collection, rules);
+    const ex = extractFromApsProps(state.collection, rules, state.totalCount);
     if (ex.family === 'none' || ex.rows.length === 0) {
       // asla uydurma: mesh/dumb-solid modellerde yapısal MTO verisi yoktur
       const msg = lang === 'tr'

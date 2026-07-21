@@ -3,6 +3,15 @@
 // bu dosyalarda boru uzunluğuna ULAŞAMAZ (binary parametre); APS temiz property döner.
 // Maliyet: NWD çevirisi 0.5 token/dosya — yalnız yerel parser 0 komponent verdiğinde kullanılır.
 import 'server-only';
+import { Readable } from 'node:stream';
+// stream-json v1 = CJS; named-export tespiti güvenilmez → default-import interop
+import streamJsonParser from 'stream-json';
+import streamJsonPick from 'stream-json/filters/Pick.js';
+import streamJsonArray from 'stream-json/streamers/StreamArray.js';
+type StreamFactory = (opts?: Record<string, unknown>) => import('node:stream').Duplex;
+const parser = ((streamJsonParser as unknown as { parser?: StreamFactory }).parser ?? streamJsonParser) as StreamFactory;
+const pick = ((streamJsonPick as unknown as { pick?: StreamFactory }).pick ?? streamJsonPick) as StreamFactory;
+const streamArray = ((streamJsonArray as unknown as { streamArray?: StreamFactory }).streamArray ?? streamJsonArray) as StreamFactory;
 
 const BASE = 'https://developer.api.autodesk.com';
 const ID = process.env.APS_CLIENT_ID;
@@ -133,25 +142,84 @@ export type ApsPhase =
   | { phase: 'translating'; progress: string }
   | { phase: 'failed'; message: string }
   | { phase: 'extracting'; guid: string }
-  | { phase: 'ready'; guid: string; collection: unknown[] };
+  | { phase: 'ready'; guid: string; collection: unknown[]; totalCount: number };
 
-// Vercel fonksiyon belleği sınırı: devasa property koleksiyonlarını (ör. 285k obje
-// ≈ 460 MB JSON) tek istekte parse etmek OOM riski — dürüst hata ver.
-const MAX_PROPS_BYTES = 100 * 1024 * 1024;
+// Devasa property setleri (ENQ-223: 285k obje ≈ 460MB JSON) tek string olarak
+// parse edilemez (OOM). Çözüm: gövdeyi STREAM'le, objeleri daha akış sırasında
+// aile filtresinden geçir (Revit boru kategorileri / Plant3D ACPP / Insert) ve
+// yalnız gerekli property gruplarını tut — bellek, tutulan alt-kümeyle sınırlı
+// kalır (285k → ~45k slim obje). Sınır bayt değil OBJE sayısıyla korunur.
+const MAX_KEPT_OBJECTS = 400_000;
+const REVIT_PIPING = new Set(['Pipes', 'Pipe Fittings', 'Pipe Accessories']);
+const P3D_TYPES = new Set(['ACPPPIPE', 'ACPPPIPEINLINEASSET', 'ACPPCONNECTOR', 'Insert']);
 
-// Gövdeyi chunk chunk oku, tavanı DEKOMPRESE bayt üzerinden uygula.
-// content-length'e güvenilmez: header hiç gelmeyebilir (chunked) ve gzip'te
-// SIKIŞTIRILMIŞ boyutu taşır (~10x küçük) — guard'ı ikisi de deler.
-async function readBodyCapped(res: Response, cap: number): Promise<string | null> {
-  if (!res.body) return null;
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
-    total += chunk.byteLength;
-    if (total > cap) return null; // erken dönüş stream'i cancel eder
-    chunks.push(chunk);
+// ALAN-düzeyi beyaz liste: grup-bazlı inceltme yetmiyor (Revit gruplarının içi
+// şişkin — 46k obje ~500MB tutuyordu). Çıkarımın okuduğu alanlar dışında her şey
+// akış sırasında atılır → aynı 46k obje ~40MB.
+const EL_FIELDS = ['Id', 'Category', 'Size', 'Overall Size', 'Length', 'System Name', 'System Abbreviation'];
+const CU_FIELDS = ['Description BOM', 'Vic_Do Not Schedule', 'Vic_Area_PT'];
+const IT_FIELDS = ['Type', 'Source File'];
+const AC_FIELDS = new Set(['Class', 'Size', 'Length', 'Spec', 'ShortDescription', 'Long Description']);
+const AC_DYNAMIC = /^(?:Port\d_NominalDiameter|Fastener\d_(?:Class Name|Size))$/;
+
+function slimGroup(src: Record<string, string> | undefined, fields: string[]): Record<string, string> | undefined {
+  if (!src) return undefined;
+  const out: Record<string, string> = {};
+  let n = 0;
+  for (const f of fields) { const v = src[f]; if (v !== undefined) { out[f] = v; n++; } }
+  return n ? out : undefined;
+}
+function slimAutoCad(src: Record<string, string> | undefined): Record<string, string> | undefined {
+  if (!src) return undefined;
+  const out: Record<string, string> = {};
+  let n = 0;
+  for (const k of Object.keys(src)) {
+    if (AC_FIELDS.has(k) || AC_DYNAMIC.test(k)) { out[k] = src[k]; n++; }
   }
-  return Buffer.concat(chunks).toString('utf8');
+  return n ? out : undefined;
+}
+
+type SlimObj = { objectid?: number; name?: string; properties?: Record<string, unknown> };
+
+function streamCollection(res: Response): Promise<{ collection: SlimObj[]; totalCount: number }> {
+  return new Promise((resolve, reject) => {
+    const kept: SlimObj[] = [];
+    let total = 0;
+    const pipeline = Readable.fromWeb(res.body as never)
+      .pipe(parser())
+      .pipe(pick({ filter: 'data.collection' }))
+      .pipe(streamArray());
+    pipeline.on('data', ({ value }: { value: SlimObj }) => {
+      total++;
+      const p = value?.properties as Record<string, Record<string, string>> | undefined;
+      const cat = p?.Element?.Category;
+      const typ = p?.Item?.Type;
+      const isRevit = Boolean(p?.Element?.Id && cat && REVIT_PIPING.has(cat));
+      const isP3d = Boolean(typ && P3D_TYPES.has(typ));
+      if (!isRevit && !isP3d) return;
+      if (kept.length >= MAX_KEPT_OBJECTS) {
+        pipeline.destroy(new Error(`Model yapısal obje tavanını aşıyor (${MAX_KEPT_OBJECTS})`));
+        return;
+      }
+      // alan-düzeyi inceltme: yalnız çıkarımın okuduğu alanlar kalır
+      const el = slimGroup(p?.Element, EL_FIELDS);
+      const cu = slimGroup(p?.Custom, CU_FIELDS);
+      const it = slimGroup(p?.Item, IT_FIELDS);
+      const ac = slimAutoCad(p?.AutoCAD);
+      kept.push({
+        objectid: value.objectid,
+        name: value.name,
+        properties: {
+          ...(el ? { Element: el } : {}),
+          ...(cu ? { Custom: cu } : {}),
+          ...(it ? { Item: it } : {}),
+          ...(ac ? { AutoCAD: ac } : {}),
+        },
+      });
+    });
+    pipeline.on('end', () => resolve({ collection: kept, totalCount: total }));
+    pipeline.on('error', reject);
+  });
 }
 
 // Çeviri/çıkarım durumunu İLERLET — hızlı döner (Vercel 300sn sınırına uygun,
@@ -175,15 +243,11 @@ export async function apsAdvance(urn: string, knownGuid?: string): Promise<ApsPh
   const pr = await authed(`/modelderivative/v2/designdata/${urn}/metadata/${guid}/properties?forceget=true`);
   if (pr.status === 202) return { phase: 'extracting', guid };
   if (pr.status !== 200) return { phase: 'failed', message: `APS properties ${pr.status}` };
-  // content-length yalnız hızlı-ret ipucu (gzip'te sıkıştırılmış boyut); asıl sınır okurken
-  const hinted = Number(pr.headers.get('content-length') ?? 0);
-  if (hinted > MAX_PROPS_BYTES) {
-    return { phase: 'failed', message: `Model property verisi çok büyük (${Math.round(hinted / 1e6)} MB) — bulut çıkarım sınırı 100 MB` };
+  // boyut sınırı YOK: akış sırasında aile-filtresi + grup-inceltme (bellek güvenli)
+  try {
+    const { collection, totalCount } = await streamCollection(pr);
+    return { phase: 'ready', guid, collection, totalCount };
+  } catch (e) {
+    return { phase: 'failed', message: e instanceof Error ? e.message.slice(0, 200) : 'property akışı okunamadı' };
   }
-  const text = await readBodyCapped(pr, MAX_PROPS_BYTES);
-  if (text === null) {
-    return { phase: 'failed', message: 'Model property verisi çok büyük — bulut çıkarım sınırı 100 MB' };
-  }
-  const d = JSON.parse(text);
-  return { phase: 'ready', guid, collection: d.data?.collection ?? [] };
 }

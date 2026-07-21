@@ -265,7 +265,7 @@ function applyRowRules(rowsIn: RawRow[], rules: CalibrationRules): RawRow[] {
   return rows;
 }
 
-export function extractFromApsProps(collection: unknown[], rules: CalibrationRules): ApsExtractResult {
+export function extractFromApsProps(collection: unknown[], rules: CalibrationRules, totalCountOverride?: number): ApsExtractResult {
   const col = collection as ApsObject[];
   const fasteners = { gaskets: 0, boltSets: 0, stubEnds: 0 };
   const raw: RawRow[] = [];
@@ -286,7 +286,8 @@ export function extractFromApsProps(collection: unknown[], rules: CalibrationRul
   return {
     rows, totals, fasteners, family,
     structuredCount: revitUsed + p3dUsed,
-    totalCount: col.length,
+    // akışlı yol koleksiyonu önceden filtreler — gerçek toplam ayrıca gelir
+    totalCount: totalCountOverride ?? col.length,
     lineCount: totals.lines.length,
     objectMap,
   };
