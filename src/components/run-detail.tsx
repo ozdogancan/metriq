@@ -73,13 +73,56 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
   const [freshAnswerId, setFreshAnswerId] = useState<string | null>(null); // bu oturumda yüklenen karşılaştırma → panele kaydır
   const answerFileRef = useRef<HTMLInputElement>(null);
   const [showFindings, setShowFindings] = useState(false); // AI bulgu listesi varsayılan kapalı
-  // "modelde göster" — yalnız bulut (APS) metrajlarında; null = panel kapalı
-  const [viewerFocus, setViewerFocus] = useState<{ rowIds: string[]; label: string } | null>(null);
-  const canView = Boolean(run.aps?.urn);
-  const openViewer = (row: MtoRow) => setViewerFocus({
-    rowIds: [row.id],
-    label: `${row.code} ${row.s1 ?? '?'}${row.s2 ? `x${row.s2}` : ''}″ · ${row.line} · ${row.qty}${row.unit}`,
-  });
+  // "modelde göster": panel bir kez açılınca GİZLENEREK kapanır (viewer sıcak kalır,
+  // ikinci açılış anında). aps3dReady: sonradan-3B akışı tamamlanınca yerel bayrak.
+  const [viewerFocus, setViewerFocus] = useState<{ rowIds: string[]; label: string }>({ rowIds: [], label: '' });
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const [viewerEver, setViewerEver] = useState(false);
+  const [aps3dReady, setAps3dReady] = useState(false);
+  const [enable3d, setEnable3d] = useState<'idle' | 'submitting' | 'translating'>('idle');
+  const canView = Boolean(run.aps?.urn) || aps3dReady;
+  const showInViewer = (rowIds: string[], label: string) => {
+    setViewerFocus({ rowIds, label });
+    setViewerOpen(true);
+    setViewerEver(true);
+  };
+  const openViewer = (row: MtoRow) => showInViewer(
+    [row.id],
+    `${row.code} ${row.s1 ?? '?'}${row.s2 ? `x${row.s2}` : ''}″ · ${row.line} · ${row.qty}${row.unit}`,
+  );
+
+  // Sonradan-3B: kaynak NWD'yi Autodesk'e çevirt (0.5 token) → çeviri bitince 3B açılır
+  async function startEnable3d() {
+    if (!window.confirm(tr
+      ? 'Bu dosya Autodesk\'te 3B için çevrilecek (0,5 token ≈ ücretsiz kota içinde, aylık tavana sayılır). Metraj satırlarına DOKUNULMAZ. Devam?'
+      : 'This file will be translated at Autodesk for 3D (0.5 token, within the free quota and monthly cap). Take-off rows are NOT touched. Continue?')) return;
+    setEnable3d('submitting');
+    try {
+      const r = await fetch(`/api/runs/${run.id}/enable-3d`, { method: 'POST' });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+      setEnable3d('translating');
+      const poll = setInterval(async () => {
+        try {
+          const s = await fetch(`/api/runs/${run.id}/enable-3d`).then(x => x.json());
+          if (s.phase === 'ready') {
+            clearInterval(poll);
+            setAps3dReady(true);
+            setEnable3d('idle');
+            toast.success(tr ? '3B hazır — "◎ 3B Model" ile aç.' : '3D ready — open with "◎ 3D Model".');
+            router.refresh();
+          } else if (s.phase === 'failed') {
+            clearInterval(poll);
+            setEnable3d('idle');
+            toast.error((tr ? '3B çevirisi başarısız: ' : '3D translation failed: ') + (s.message ?? ''));
+          }
+        } catch { /* sıradaki poll dener */ }
+      }, 5000);
+    } catch (e) {
+      setEnable3d('idle');
+      toast.error((tr ? '3B etkinleştirilemedi: ' : 'Could not enable 3D: ') + (e instanceof Error ? e.message : ''));
+    }
+  }
 
   const tr = lang === 'tr';
 
@@ -269,19 +312,21 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
           )}
           {saving === 'saved' && <span className="chip"><span className="chip-dot bg-mint" />{t(lang, 'saved')}</span>}
           {canView ? (
-            <button onClick={() => setViewerFocus({ rowIds: [], label: tr ? 'Tüm model' : 'Whole model' })}
+            <button onClick={() => showInViewer([], tr ? 'Tüm model' : 'Whole model')}
               className="btn"
               title={tr ? '3B modeli aç — satır ikonları (◎) o satırın parçalarına zoom yapar' : 'Open the 3D model — row icons (◎) zoom to that row\'s parts'}>
               ◎ {tr ? '3B Model' : '3D Model'}
             </button>
           ) : run.status === 'done' && (
-            // sessiz yokluk "bug" gibi okunuyor — nedenini söyle
-            <span className="chip cursor-help text-muted"
+            // yerel işlenen dosya: 3B'yi talep üzerine aç (Autodesk çevirisi, 0.5 token)
+            <button onClick={startEnable3d} disabled={enable3d !== 'idle'} className="btn"
               title={tr
-                ? 'Bu dosya yerel motorla işlendi (Autodesk çevirisi gerekmedi) — 3B görüntüleme yalnız bulutta çevrilen dosyalarda (Revit / karışık CAD) mevcut.'
-                : 'This file was processed by the local engine (no Autodesk translation needed) — 3D viewing is available only for cloud-translated files (Revit / mixed CAD).'}>
-              ◎ {tr ? '3B: bu dosyada yok' : '3D: n/a for this file'}
-            </span>
+                ? 'Bu dosya yerel motorla işlendi; 3B için Autodesk\'te bir kez çevrilmesi gerekir (0,5 token, aylık tavana sayılır). Metraj satırlarına dokunulmaz.'
+                : 'This file was processed locally; 3D needs a one-time Autodesk translation (0.5 token, counted against the monthly cap). Take-off rows are untouched.'}>
+              {enable3d === 'idle' && <>◎ {tr ? '3B\'yi etkinleştir' : 'Enable 3D'}</>}
+              {enable3d === 'submitting' && (tr ? 'Gönderiliyor…' : 'Submitting…')}
+              {enable3d === 'translating' && (tr ? '3B çevriliyor… (~1-5 dk)' : 'Translating 3D… (~1-5 min)')}
+            </button>
           )}
           <button onClick={() => answerFileRef.current?.click()} disabled={answerBusy} className="btn"
             title={tr ? 'Müşterinin cevap Excel\'ini yükle — sonuçla karşılaştırılır' : 'Upload the client\'s answer Excel — compared against the result'}>
@@ -299,7 +344,7 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
       {answer && (
         <AnswerPanel lang={lang} run={run} answer={answer} calibrations={calibrations} dirty={dirty}
           freshId={freshAnswerId}
-          onView={canView ? (rowIds, label) => setViewerFocus({ rowIds, label }) : undefined}
+          onView={canView ? showInViewer : undefined}
           onApplied={next => { setAnswer(next); router.refresh(); }} />
       )}
 
@@ -456,11 +501,12 @@ export function RunDetail({ lang, run, initialRows, steel, calibrations }: {
         </div>
       </div>
 
-      {/* 3B model paneli */}
-      {viewerFocus && canView && (
-        <ModelViewerPanel lang={lang} runId={run.id}
+      {/* 3B model paneli — ilk açılıştan sonra hep monte kalır (gizlenir):
+          model bellekte, ikinci açılış anında; teardown kaynaklı kapanma sorunları yok */}
+      {viewerEver && canView && (
+        <ModelViewerPanel lang={lang} runId={run.id} open={viewerOpen}
           focusRowIds={viewerFocus.rowIds} focusLabel={viewerFocus.label}
-          onClose={() => setViewerFocus(null)} />
+          onClose={() => setViewerOpen(false)} />
       )}
     </div>
   );

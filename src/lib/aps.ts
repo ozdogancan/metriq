@@ -95,6 +95,29 @@ export async function apsSubmit(objectKey: string, buf: Buffer): Promise<{ urn: 
   return { urn };
 }
 
+// Yalnız çeviri durumu (property İNDİRMEDEN) — sonradan-3B akışı için hafif poll.
+// apsAdvance'ten farkı: ready'de koleksiyon çekmez; satırlar zaten yerelden var.
+export async function apsManifestPhase(urn: string, knownGuid?: string): Promise<
+  | { phase: 'translating'; progress: string }
+  | { phase: 'failed'; message: string }
+  | { phase: 'ready'; guid: string }
+> {
+  const m = await (await authed(`/modelderivative/v2/designdata/${urn}/manifest`)).json();
+  if (m.status === 'failed' || m.status === 'timeout') {
+    const msg = m.derivatives?.flatMap((d: { messages?: { message?: string }[] }) => d.messages ?? [])
+      .map((x: { message?: string }) => x.message).filter(Boolean).join('; ');
+    return { phase: 'failed', message: (msg || 'Autodesk çevirisi başarısız').slice(0, 300) };
+  }
+  if (m.status !== 'success') return { phase: 'translating', progress: String(m.progress ?? '') };
+  let guid = knownGuid;
+  if (!guid) {
+    const meta = await (await authed(`/modelderivative/v2/designdata/${urn}/metadata`)).json();
+    guid = meta.data?.metadata?.find((v: { role: string }) => v.role === '3d')?.guid ?? meta.data?.metadata?.[0]?.guid;
+    if (!guid) return { phase: 'failed', message: '3D görünüm bulunamadı' };
+  }
+  return { phase: 'ready', guid };
+}
+
 export type ApsPhase =
   | { phase: 'translating'; progress: string }
   | { phase: 'failed'; message: string }
