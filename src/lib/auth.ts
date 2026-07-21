@@ -54,9 +54,17 @@ export function identityForEmail(rawEmail: string): SessionIdentity | null {
   const configuredUsers = users();
   if (!configuredUsers.has(email)) return null;
   const alias = tenantAliases().get(email);
-  const legacyOwner = (process.env.AUTH_LEGACY_OWNER || '').trim().toLowerCase();
-  const ownsLegacyData = legacyOwner
-    ? legacyOwner === email && configuredUsers.has(legacyOwner)
+  // AUTH_LEGACY_OWNER tek e-posta ya da ";"/"," ile ayrılmış LİSTE olabilir.
+  // Metriq gibi ortak çalışılan kurulumlarda mevcut tüm veri tek legacy tenant'ta
+  // durur; birden fazla sahip tanımlanmazsa ekip deploy sonrası kendi geçmişini
+  // göremez (gerçek vaka: 2 kullanıcı, migration sonrası 0 metraj).
+  const legacyOwners = new Set(
+    (process.env.AUTH_LEGACY_OWNER || '')
+      .split(/[;,]/).map(value => value.trim().toLowerCase())
+      .filter(value => value.length > 0 && configuredUsers.has(value)),
+  );
+  const ownsLegacyData = legacyOwners.size
+    ? legacyOwners.has(email)
     : configuredUsers.size === 1;
   return {
     email,
