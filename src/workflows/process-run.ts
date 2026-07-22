@@ -40,10 +40,10 @@ export async function processRunWorkflow(input: ProcessRunWorkflowInput): Promis
   let state = await processStoredRunStep(input);
   if (state.terminal) return state;
 
-  // Wall-clock expiry is enforced from persisted run.createdAt inside every
-  // tick. This generous static bound is only a compiler/runtime safety net;
-  // varying 2–20 second waits cannot extend or shorten the one-hour deadline.
-  for (let attempt = 0; attempt < 720; attempt++) {
+  // Wall-clock expiry is enforced from persisted run timestamps inside every
+  // tick (translation ≤1h, property preparation ≤3h — durable sleep is free).
+  // This generous static bound is only a compiler/runtime safety net.
+  for (let attempt = 0; attempt < 1300; attempt++) {
     await sleep(`${state.waitSeconds ?? 10}s`);
     state = await advanceApsRunStep(input);
     if (state.terminal) return state;

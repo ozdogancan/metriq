@@ -364,16 +364,31 @@ export async function advanceApsRun(
   const run = await getRun(scope, id);
   if (!run || run.status !== 'processing' || !run.aps) return phase('noop', true);
   let stages = run.progress ?? freshStages();
-  const deadline = new Date(run.createdAt).getTime() + 60 * 60 * 1000;
-  if (!Number.isFinite(deadline) || Date.now() >= deadline) {
+  // Süre pencereleri FAZ-DUYARLI ve resume-duyarlıdır. Gerçek vaka (Model 16Dec):
+  // çeviri dakikada bitti ama Autodesk property veritabanını >1 saat hazırlayamadı;
+  // katı tek duvar, PARASI ÖDENMİŞ bitmiş çeviriyi çöpe atıp yanıltıcı "çeviri
+  // tamamlanmadı" mesajı verdi. Çeviri ≤1sa; toplam ≤3sa (durable sleep bedava).
+  const windowStart = Math.max(
+    new Date(run.createdAt).getTime() || 0,
+    run.aps.resumedAt ? (new Date(run.aps.resumedAt).getTime() || 0) : 0,
+  );
+  const TRANSLATE_WINDOW_MS = 60 * 60 * 1000;
+  const TOTAL_WINDOW_MS = 3 * 60 * 60 * 1000;
+  if (!windowStart || Date.now() >= windowStart + TOTAL_WINDOW_MS) {
     const message = lang === 'tr'
-      ? 'Bulut çevirisi bir saat içinde tamamlanmadı; güvenli biçimde durduruldu.'
-      : 'Cloud translation did not complete within one hour and was stopped safely.';
+      ? 'Autodesk özellik veritabanı 3 saat içinde hazırlanamadı. "Buluttan devam et" ile ücretsiz yeniden deneyebilirsin — çeviri tekrar ücretlendirilmez.'
+      : 'Autodesk could not prepare the property database within three hours. Use "Resume from cloud" to retry for free — translation is not billed again.';
     return failRun(scope, run, lang, message, stages);
   }
   try {
     const manifest = await apsManifestPhase(run.aps.urn, run.aps.guid);
     if (manifest.phase === 'translating') {
+      if (Date.now() >= windowStart + TRANSLATE_WINDOW_MS) {
+        const message = lang === 'tr'
+          ? 'Autodesk çevirisi 1 saat içinde tamamlanmadı. "Buluttan devam et" ile kaldığı yerden sürdürülebilir.'
+          : 'Autodesk translation did not finish within one hour. Use "Resume from cloud" to continue where it left off.';
+        return failRun(scope, run, lang, message, stages);
+      }
       stages = stageSet(stages, 'scan', 'active', { bulut: `Autodesk çevirisi ${manifest.progress || 'sürüyor'}` });
       await updateRunMeta(scope, id, { progress: stages });
       return phase('translating', false, { waitSeconds: 10 });
@@ -510,8 +525,14 @@ export async function expireRunWorkflow(
 ): Promise<RunWorkflowPhase> {
   const run = await getRun(scope, id);
   if (!run || run.status !== 'processing') return phase('noop', true);
+  // Mesaj gerçeğe sadık: guid varsa çeviri BİTMİŞTİR, takılan property hazırlığıdır.
+  const translated = Boolean(run.aps?.guid);
   const message = lang === 'tr'
-    ? 'Bulut çevirisi bir saat içinde tamamlanmadı; güvenli biçimde durduruldu.'
-    : 'Cloud translation did not complete within one hour and was stopped safely.';
+    ? translated
+      ? 'Autodesk özellik veritabanı zamanında hazırlanamadı. "Buluttan devam et" ile ücretsiz yeniden deneyebilirsin — çeviri tekrar ücretlendirilmez.'
+      : 'Autodesk çevirisi zamanında tamamlanmadı. "Buluttan devam et" ile kaldığı yerden sürdürülebilir.'
+    : translated
+      ? 'Autodesk could not prepare the property database in time. Use "Resume from cloud" to retry for free — translation is not billed again.'
+      : 'Autodesk translation did not finish in time. Use "Resume from cloud" to continue where it left off.';
   return failRun(scope, run, lang, message, run.progress ?? freshStages());
 }

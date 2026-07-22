@@ -281,8 +281,10 @@ export function ProcessingTheater(props: {
   fileSizeMb: number;
   stages: StageEvent[];
   error?: string;
+  /** Hata panelinde kurtarma eylemi (ör. "Buluttan devam et") — sahibi ProcessingLive */
+  errorAction?: React.ReactNode;
 }): JSX.Element {
-  const { lang, fileName, fileSizeMb, stages, error } = props;
+  const { lang, fileName, fileSizeMb, stages, error, errorAction } = props;
   const locale = localeOf(lang);
   const failed = Boolean(error);
 
@@ -513,6 +515,7 @@ export function ProcessingTheater(props: {
           <div className="min-w-0">
             <div className="text-[12.5px] font-semibold text-danger">{UI.failed[lang]}</div>
             <div className="mt-0.5 break-words font-data text-[11px] text-danger/90">{error}</div>
+            {errorAction && <div className="mt-2.5">{errorAction}</div>}
           </div>
         </div>
       )}

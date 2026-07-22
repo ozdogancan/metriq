@@ -44,7 +44,11 @@ export function authorizeViewerPath(slug: readonly string[], ownedUrn: string): 
 
   let kind: AuthorizedViewerPath['kind'];
   if (operation === 'manifest' || operation === 'thumbnails' || operation === 'endpoints') {
-    if (target !== ownedUrn) return null;
+    // Viewer manifest'i "urn:<base64>" ÖNEKİYLE ister (Document.load('urn:…')).
+    // Önek sahiplik karşılaştırmasından önce soyulur; yoksa her manifest isteği
+    // 403 alır ve Viewer stok "No access" diyaloğunu gösterir (gerçek vaka).
+    const bare = target.startsWith('urn:') ? target.slice(4) : target;
+    if (bare !== ownedUrn) return null;
     kind = 'source';
   } else if (operation === 'derivatives') {
     if (!target.startsWith(`urn:adsk.viewing:fs.file:${ownedUrn}/`)) return null;

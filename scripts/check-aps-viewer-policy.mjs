@@ -31,3 +31,19 @@ assert.equal(authorizeViewerPath(['derivativeservice', 'v2', 'derivatives', '../
 assert.equal(authorizeViewerPath(['https:', '', 'evil.example'], urn), null);
 
 console.log('APS viewer proxy: tenant/run URN boundary verified');
+
+// REGRESYON (gercek vaka): Viewer manifest'i "urn:<base64>" ONEKIYLE ister —
+// onek soyulmadan sahiplik karsilastirmasi 403 uretir ve Autodesk "No access"
+// diyalogu cikar. Onekli istek KABUL, baskasinin URN'i onekli de olsa RED.
+{
+  const OWNED = 'dXJuOmFkc2sub2JqZWN0czpvcy5vYmplY3Q6dGVzdC90ZXN0LW93bmVk';
+  const ok = authorizeViewerPath(['derivativeservice', 'v2', 'manifest', `urn:${OWNED}`], OWNED);
+  assert.ok(ok && ok.kind === 'source', 'urn: onekli manifest kabul edilmeli');
+  const bare = authorizeViewerPath(['derivativeservice', 'v2', 'manifest', OWNED], OWNED);
+  assert.ok(bare && bare.kind === 'source', 'oneksiz manifest de kabul edilmeli');
+  const foreign = authorizeViewerPath(['derivativeservice', 'v2', 'manifest', 'urn:BASKASININURNIBASKASININURNI'], OWNED);
+  assert.equal(foreign, null, 'baskasinin URN\'i onekli de olsa reddedilmeli');
+  const thumb = authorizeViewerPath(['derivativeservice', 'v2', 'thumbnails', `urn:${OWNED}`], OWNED);
+  assert.ok(thumb, 'urn: onekli thumbnail kabul edilmeli');
+}
+console.log('viewer policy: urn:-prefixed manifest regression covered');

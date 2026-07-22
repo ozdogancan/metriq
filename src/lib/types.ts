@@ -42,6 +42,7 @@ export interface RunApsJob {
   submittedAt: string;
   claimedUntil?: string; // ready-tamamlama kilidi: çift instance aynı işi bitirmesin
   retriedAt?: string;    // geçici çeviri-hatasında tek otomatik yeniden deneme
+  resumedAt?: string;    // "Buluttan devam et": süre pencereleri bu andan sayılır
   analysis?: ExtractionQuality;
 }
 
