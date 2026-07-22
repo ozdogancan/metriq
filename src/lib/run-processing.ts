@@ -22,7 +22,7 @@ import { apsEnabled, apsFetchProperties, apsManifestPhase, apsRetryTranslate, ap
 import { applyRules, detectVocab } from './vocab';
 import { aiEnabled, computeComplexity, runAudit } from './ai';
 import { DEFAULT_RULES, STAGE_ORDER, type CalibrationRules, type ExtractionQuality, type Run, type RunCalibrationSnapshot, type StageEvent } from './types';
-import { storageKeyName } from './upload-policy';
+import { isUuid, storageKeyName } from './upload-policy';
 
 export interface RunWorkflowPhase {
   phase: 'done' | 'review' | 'failed' | 'aps' | 'translating' | 'extracting' | 'busy' | 'retry' | 'noop';
@@ -106,7 +106,16 @@ async function resolveRules(
   const frozen = run.calibrationSnapshot;
   if (frozen && (frozen.modelFamily === modelFamily || frozen.modelFamily === 'legacy')
     && frozen.rules.vocab === run.vocab) {
-    return { rules: frozen.rules, appliedId: frozen.id, appliedName: frozen.name, snapshot: frozen };
+    // Sentetik varsayılan snapshot'ın kimliği ('default-aps-steel-plant') DB'de
+    // SAKLANAN bir profil değildir; appliedId olarak dönerse advance onu uuid
+    // kolonuna yazmaya çalışır → 22P02 → her tik retry → saat dolana dek döngü
+    // (gerçek vaka: Model 16Dec'in "1 saatte tamamlanmadı" hatasının asıl kökü).
+    return {
+      rules: frozen.rules,
+      appliedId: isUuid(frozen.id) ? frozen.id : null,
+      appliedName: frozen.name,
+      snapshot: frozen,
+    };
   }
   if (run.calibrationId) {
     const explicit = await getCalibration(scope, run.calibrationId);
