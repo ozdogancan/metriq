@@ -43,20 +43,26 @@ export function authorizeViewerPath(slug: readonly string[], ownedUrn: string): 
   const target = targets[0];
 
   let kind: AuthorizedViewerPath['kind'];
+  let upstreamTarget = target;
   if (operation === 'manifest' || operation === 'thumbnails' || operation === 'endpoints') {
     // Viewer manifest'i "urn:<base64>" ÖNEKİYLE ister (Document.load('urn:…')).
     // Önek sahiplik karşılaştırmasından önce soyulur; yoksa her manifest isteği
     // 403 alır ve Viewer stok "No access" diyaloğunu gösterir (gerçek vaka).
+    // Upstream'e ise ÇIPLAK base64 iletilir — cdn.derivative önekli manifest'e
+    // 400 "requested manifest urn is invalid" döner (canlıda doğrulandı).
     const bare = target.startsWith('urn:') ? target.slice(4) : target;
     if (bare !== ownedUrn) return null;
+    upstreamTarget = bare;
     kind = 'source';
   } else if (operation === 'derivatives') {
+    // Derivative varlık URN'i ('urn:adsk.viewing:fs.file:…') upstream'in
+    // beklediği tam formattır — olduğu gibi iletilir.
     if (!target.startsWith(`urn:adsk.viewing:fs.file:${ownedUrn}/`)) return null;
     kind = 'derivative';
   } else {
     return null;
   }
 
-  const canonical = [...prefix, operation, encodeURIComponent(target)].join('/');
+  const canonical = [...prefix, operation, encodeURIComponent(upstreamTarget)].join('/');
   return { upstreamPath: canonical, kind };
 }

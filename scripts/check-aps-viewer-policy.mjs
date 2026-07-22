@@ -47,3 +47,16 @@ console.log('APS viewer proxy: tenant/run URN boundary verified');
   assert.ok(thumb, 'urn: onekli thumbnail kabul edilmeli');
 }
 console.log('viewer policy: urn:-prefixed manifest regression covered');
+
+// Upstream normalizasyonu: onekli manifest KABUL edilir ama upstream'e CIPLAK
+// base64 gider (cdn.derivative onekliye 400 verir — canli dogrulama).
+{
+  const OWNED = 'dXJuOmFkc2sub2JqZWN0czpvcy5vYmplY3Q6dGVzdC90ZXN0LW93bmVk';
+  const viaPrefix = authorizeViewerPath(['derivativeservice', 'v2', 'manifest', `urn:${OWNED}`], OWNED);
+  assert.ok(viaPrefix && !viaPrefix.upstreamPath.includes('urn%3A') && viaPrefix.upstreamPath.endsWith(encodeURIComponent(OWNED)),
+    'onekli manifest upstream\'e CIPLAK base64 olarak gitmeli');
+  const deriv = authorizeViewerPath(['derivativeservice', 'v2', 'derivatives', `urn:adsk.viewing:fs.file:${OWNED}/output/geom.svf`], OWNED);
+  assert.ok(deriv && deriv.upstreamPath.includes(encodeURIComponent('urn:adsk.viewing:fs.file:')),
+    'derivative URN formu upstream\'e OLDUGU GIBI gitmeli');
+}
+console.log('viewer policy: upstream bare-urn normalization covered');
