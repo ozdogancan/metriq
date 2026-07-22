@@ -54,7 +54,9 @@ export async function POST(req: NextRequest, ctx: Ctx) {
         clientKey: 'default',
       }))?.rules
       ?? DEFAULT_RULES[run.vocab] ?? DEFAULT_RULES['steel-plant'];
-    const scopeSuggestions = inferScopeSuggestions(ours, answerRows, activeRules);
+    // external satırlar öneri hesabına da girmez: RFI/saha-payı kalemleri
+    // "kural açarsak eşleşir" yanılgısı üretmesin
+    const scopeSuggestions = inferScopeSuggestions(ours, answerRows.filter(r => !r.external), activeRules);
     if (scopeSuggestions.length) diff.scopeSuggestions = scopeSuggestions;
     await recordAnswerComparison(identity, {
       id: comparisonId,

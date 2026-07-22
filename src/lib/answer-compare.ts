@@ -284,7 +284,16 @@ export function stripRiskyXlsxParts(buf: Buffer): Buffer {
   return Buffer.concat([...chunks, ...centrals, eo]);
 }
 
-export interface AnswerRow { code: string; s1: number | null; s2: number; qty: number; unit: Unit }
+export interface AnswerRow {
+  code: string; s1: number | null; s2: number; qty: number; unit: Unit;
+  /**
+   * Model-dışı satır: şablonda çizim-referans kolonu (GA/DWG/ISO) varken referansı
+   * boş ya da RFI/FUTURE olan kalemler. Bunlar modelden ÖLÇÜLEMEZ (saha payı,
+   * RFI ekleri) — karşılaştırmaya sokulursa skoru haksız düşürür. Gerçek vaka
+   * GR-166: 170,7m boru + conta/flanş ekleri; ayrıştırılınca 10″ birebir çıktı.
+   */
+  external?: boolean;
+}
 
 export interface QuantityWeightedOverlap {
   percent: number;
@@ -306,7 +315,7 @@ export interface AnswerComparisonMetrics {
 
 export type AnswerDiffWithMetrics = AnswerDiff & { metrics: AnswerComparisonMetrics };
 
-type HeaderKey = 'code' | 'description' | 'dn' | 's1in' | 's2in' | 's1mm' | 's2mm' | 'qty' | 'unit';
+type HeaderKey = 'code' | 'description' | 'dn' | 's1in' | 's2in' | 's1mm' | 's2mm' | 'qty' | 'unit' | 'ref';
 type HeaderColumns = Partial<Record<HeaderKey, number>>;
 
 interface AnswerSheetView {
@@ -340,6 +349,8 @@ const HEADERS: Record<HeaderKey, RegExp> = {
   s2mm: /size\s*2.*(?:\(\s*mm\s*\)|\bmm\b)|çap\s*2.*\bmm\b/i,
   qty: /^(?:total\s+)?quantity$|^miktar$|adet-?boy|^qty\.?$/i,
   unit: /qty\.?\s*units?|unit\s*of\s*measure|^birim$|^units?$/i,
+  // çizim referans kolonu: satırı modele bağlayan kimlik (Grissan'da "GA")
+  ref: /^ga$|^dwg(?:\s*no\.?)?$|^drawing(?:\s*(?:no\.?|ref))?$|^iso(?:metric)?(?:\s*no\.?)?$|^izo(?:metri)?(?:\s*no\.?)?$|^çizim(?:\s*no)?$/i,
 };
 
 function cellText(c: unknown): string {
@@ -498,6 +509,18 @@ function findHeaderBlocks(sheet: AnswerSheetView): HeaderBlock[] {
           if (cols[key] == null || preferLast) cols[key] = match.column;
         }
       }
+      // Çizim-referans (GA/DWG) kolonu tipik olarak kod ankrajının SOLUNDA durur
+      // (Grissan: "GA" 3. kolon, "Material Code" 4.). Yalnız ref için, önceki
+      // ankrajı aşmayan dar bir sol pencere taranır — diğer başlıklar etkilenmez.
+      if (cols.ref == null) {
+        const prevAnchor = anchors[index - 1]?.column ?? 0;
+        const leftStart = Math.max(1, prevAnchor + 1, anchor.column - 6);
+        for (const match of matches) {
+          if (match.column >= leftStart && match.column < anchor.column && match.keys.includes('ref')) {
+            cols.ref = match.column;
+          }
+        }
+      }
       if (cols.qty == null) continue;
       if (kind === 'bom-breakdown' && cols.dn == null && cols.s1mm == null && cols.s1in == null) continue;
       const score = Object.keys(cols).length
@@ -572,12 +595,20 @@ function parseBlock(block: HeaderBlock, blocks: HeaderBlock[]): AnswerRow[] {
     const s2In = cols.s2in != null ? cellNum(sheet.valueAt(row, cols.s2in)) : null;
     const s1Mm = cols.s1mm != null ? cellNum(sheet.valueAt(row, cols.s1mm)) : null;
     const s2Mm = cols.s2mm != null ? cellNum(sheet.valueAt(row, cols.s2mm)) : null;
+    // Referans kolonu VARSA: boş referans ya da RFI/FUTURE = modele bağlanamayan
+    // insan eki. Kolon hiç yoksa hiçbir satır işaretlenmez (tam geriye uyum).
+    let external: boolean | undefined;
+    if (cols.ref != null) {
+      const refText = cellText(sheet.valueAt(row, cols.ref)).trim();
+      if (!refText || /\b(?:RFI|FUTURE|ALLOWANCE|SITE\s*RUN)\b/i.test(refText)) external = true;
+    }
     rows.push({
       code,
       s1: s1In ?? millimetresToNps(s1Mm),
       s2: s2In ?? millimetresToNps(s2Mm) ?? 0,
       qty: qtyRaw,
       unit: standardUnit(code, cols.unit != null ? sheet.valueAt(row, cols.unit) : null),
+      ...(external ? { external } : {}),
     });
   }
   return rows;
@@ -740,6 +771,19 @@ export function compareAnswer(
   sheet: string,
   options: { comparisonId?: string; baseRowsRevision?: number } = {},
 ): AnswerDiffWithMetrics {
+  // Model-dışı satırlar (external) karşılaştırmaya GİRMEZ: modelden ölçülemeyen
+  // insan eklerini skora karıştırmak "motor kötü" yanılgısı üretir. Ayrı blokta
+  // raporlanır — teklife elle eklenecek kalemler olarak görünür kalırlar.
+  const externalAgg = new Map<string, AnswerValue>();
+  for (const row of answer.filter(value => value.external)) {
+    const key = `${normCode(row.code)}|${row.s1 ?? '?'}|${row.s2}|${row.unit}`;
+    const existing = externalAgg.get(key);
+    if (existing) existing.qty += row.qty;
+    else externalAgg.set(key, { code: normCode(row.code), s1: row.s1, s2: row.s2, qty: row.qty, unit: row.unit });
+  }
+  const externalItems = [...externalAgg.values()].sort((a, b) => b.qty - a.qty);
+  answer = answer.filter(value => !value.external);
+
   const oursAgg = new Map<string, OursAggregate>();
   for (const row of ours.filter(value => value.scope === 'MAIN')) {
     const key = valueKey(row);
@@ -857,6 +901,7 @@ export function compareAnswer(
     counts: { matched, qtyDiff, fieldDiff, missing, extra },
     metrics,
     rows,
+    ...(externalItems.length ? { externalItems } : {}),
     createdAt: new Date().toISOString(),
   };
 }

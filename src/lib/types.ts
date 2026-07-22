@@ -165,6 +165,12 @@ export interface AnswerDiff {
   };
   rows: AnswerDiffRow[];
   /**
+   * Cevap şablonundaki MODEL-DIŞI kalemler: çizim-referans (GA/DWG) kolonu boş
+   * ya da RFI/FUTURE işaretli satırlar. Modelden ölçülemezler; karşılaştırmaya
+   * girmezler, teklife elle eklenecekler listesi olarak ayrı gösterilirler.
+   */
+  externalItems?: AnswerValue[];
+  /**
    * "Bunu zaten buluyoruz ama teklife katmıyoruz" önerileri. Karşılaştırma
    * yalnız MAIN'i görür; INFO'daki vana/conta cevapta saf 'eksik' gibi
    * görünürdü. Kullanıcı tek tıkla kuralı öğretir.

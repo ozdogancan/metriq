@@ -152,3 +152,32 @@ assert.equal(forgedEntry, true);
 await assert.rejects(() => parseAnswerXlsx(forged), /ZIP/);
 
 console.log('answer comparison: extended metrics, multi-block/Row-ID, XLS/CFB, and archive guards verified');
+
+// Model-disi satirlar (GA/DWG referans kolonu): bos ref veya RFI karsilastirmaya
+// GIRMEZ, externalItems'ta raporlanir. Kolon yoksa hicbir sey isaretlenmez.
+{
+  const extBook = new ExcelJS.Workbook();
+  const extSheet = extBook.addWorksheet('MTO');
+  extSheet.addRow(['Item No.', 'GA', 'Material Code', 'Size 1 (inch)', 'Quantity', 'Unit']);
+  extSheet.addRow([1, '008', 'PIPE', 6, 100, 'M']);      // modelden
+  extSheet.addRow([2, '', 'PIPE', 6, 50, 'M']);          // GA bos -> insan eki
+  extSheet.addRow([3, 'RFI', 'GASKET', 6, 10, 'EA']);    // RFI -> insan eki
+  const extBuf = Buffer.from(await extBook.xlsx.writeBuffer());
+  const { rows: extRows } = await parseAnswerXlsx(extBuf);
+  assert.equal(extRows.length, 3, 'uc satir da okunmali');
+  assert.equal(extRows.filter(r => r.external).length, 2, 'GA-bos + RFI external olmali');
+  const oursExt = [{ id: 'p1', line: 'L', code: 'PIPE', sub: '', s1: 6, s2: 0, qty: 100, unit: 'M', remark: '', scope: 'MAIN' }];
+  const extDiff = compareAnswer(oursExt, extRows, 'f.xlsx', 'MTO');
+  assert.equal(extDiff.accuracy, 100, 'external satirlar skoru dusurmemeli (tek karsilastirilabilir satir birebir)');
+  assert.equal(extDiff.externalItems?.length, 2, 'externalItems iki kalem tasimali');
+  assert.ok(extDiff.externalItems.some(x => x.code === 'PIPE' && x.qty === 50), 'GA-bos boru external listede');
+
+  // referans kolonu OLMAYAN sablonda davranis degismez
+  const plainBook = new ExcelJS.Workbook();
+  const plainSheet = plainBook.addWorksheet('MTO');
+  plainSheet.addRow(['Material Code', 'Size 1 (inch)', 'Quantity', 'Unit']);
+  plainSheet.addRow(['PIPE', 6, 100, 'M']);
+  const { rows: plainRows } = await parseAnswerXlsx(Buffer.from(await plainBook.xlsx.writeBuffer()));
+  assert.equal(plainRows.filter(r => r.external).length, 0, 'ref kolonu yokken external isaretlenmemeli');
+}
+console.log('answer comparison: model-external (GA/RFI) split verified');

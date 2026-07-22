@@ -105,6 +105,9 @@ export async function POST(req: NextRequest, ctx: Ctx) {
       comparisonId: comparison.diff.id,
       baseRowsRevision: (run.rowRevision ?? 0) + 1,
     });
+    // Model-dışı kalemler yeniden-karşılaştırmada kaybolmasın (diff.rows'ta
+    // yoklar; kaynak karşılaştırmadan aynen taşınırlar)
+    if (comparison.diff.externalItems?.length) answerAfter.externalItems = comparison.diff.externalItems;
     answerAfter.appliedAt = new Date().toISOString();
     answerAfter.calibrationVersion = expectedProfileVersion + 1;
     answerAfter.projectedAccuracy = projectedAccuracy(comparison.diff, decisions);

@@ -1200,6 +1200,28 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, freshId, onApplie
         </div>
       </div>
 
+      {/* Model-dışı kalemler: GA/DWG referansı boş ya da RFI — modelden ölçülemez */}
+      {(answer.externalItems?.length ?? 0) > 0 && (() => {
+        const ext = answer.externalItems!;
+        const extM = ext.filter(x => x.unit === 'M').reduce((s, x) => s + x.qty, 0);
+        const extEa = ext.filter(x => x.unit === 'EA').reduce((s, x) => s + x.qty, 0);
+        return (
+          <div className="mt-3 rounded border border-line px-3.5 py-2.5" style={{ background: 'color-mix(in oklab, var(--color-steel) 7%, transparent)' }}>
+            <p className="font-data text-[11.5px]">
+              🧾 {tr
+                ? <>Excel&apos;de <b>{ext.length} model-dışı kalem</b> bulundu (çizim referansı boş / RFI): {extM > 0 && <b>{Math.round(extM * 10) / 10} m boru</b>}{extM > 0 && extEa > 0 && ' + '}{extEa > 0 && <b>{Math.round(extEa)} adet</b>}. Bunlar modelde OLMAYAN saha/RFI ekleridir — karşılaştırmaya katılmadı, teklife elle eklenir.</>
+                : <>The Excel contains <b>{ext.length} model-external items</b> (blank drawing ref / RFI): {extM > 0 && <b>{Math.round(extM * 10) / 10} m pipe</b>}{extM > 0 && extEa > 0 && ' + '}{extEa > 0 && <b>{Math.round(extEa)} pcs</b>}. These are site/RFI additions absent from the model — excluded from the comparison, added to quotes manually.</>}
+            </p>
+            <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 font-data text-[10px] text-muted">
+              {ext.slice(0, 8).map((x, i) => (
+                <span key={i}>{x.code}{x.s1 != null ? ` ${x.s1}"` : ''} × {Math.round(x.qty * 10) / 10}{x.unit === 'M' ? ' m' : ''}</span>
+              ))}
+              {ext.length > 8 && <span>+{ext.length - 8} {tr ? 'kalem daha' : 'more'}</span>}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* karar: iki yol — tek tıkla komple kabul+kalibre YA DA satır satır */}
       {decidable && (
         <div className="mt-4">
