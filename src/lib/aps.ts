@@ -140,11 +140,24 @@ export async function apsManifestPhase(urn: string, knownGuid?: string): Promise
   return { phase: 'ready', guid };
 }
 
+/**
+ * Akış-anı teşhis sayacı: aile filtresine TAKILMAYAN modellerde bile "içeride
+ * ne vardı"yı söyleyebilmek için. Objeler tutulmaz (bellek güvenli), yalnız
+ * sayaçlar birikir. Gerçek vaka (Model 16Dec): 14.135 obje / 0 yapısal —
+ * kör "desteklenmiyor" yerine "12 boru katmanında 3.4k yalın katı var ama
+ * ölçü verisi yok" diyebilmek bu sayaçlarla mümkün oluyor.
+ */
+export interface ApsStreamDiag {
+  pipingLayerObjects: number;
+  pipingLayers: Record<string, number>;   // katman adı → obje (tavan: 40 anahtar)
+  hardwareBlocks: Record<string, number>; // katalog bloğu adı → adet (tavan: 60)
+}
+
 export type ApsPhase =
   | { phase: 'translating'; progress: string }
   | { phase: 'failed'; message: string }
   | { phase: 'extracting'; guid: string }
-  | { phase: 'ready'; guid: string; collection: unknown[]; totalCount: number };
+  | { phase: 'ready'; guid: string; collection: unknown[]; totalCount: number; diag: ApsStreamDiag };
 
 // Devasa property setleri (doğrulanmış örnek: 285k obje ≈ 460MB JSON) tek string olarak
 // parse edilemez (OOM). Çözüm: gövdeyi STREAM'le, objeleri daha akış sırasında
@@ -189,10 +202,16 @@ function slimAutoCad(src: Record<string, string> | undefined): Record<string, st
 
 type SlimObj = { objectid?: number; name?: string; properties?: Record<string, unknown> };
 
-function streamCollection(res: Response): Promise<{ collection: SlimObj[]; totalCount: number }> {
+const PIPING_LAYER = /pip(?:e|ing)/i;
+// Katalog bloğu: "Sechskantschraube-+-8106.010.030_-_…" gibi artikel-kodlu adlar
+const CATALOG_BLOCK = /^\p{L}[\p{L}\p{M}]+-\+-\d{4}[._]/u;
+const MAX_DIAG_KEYS = { layers: 40, blocks: 60 };
+
+function streamCollection(res: Response): Promise<{ collection: SlimObj[]; totalCount: number; diag: ApsStreamDiag }> {
   return new Promise((resolve, reject) => {
     const kept: SlimObj[] = [];
     let total = 0;
+    const diag: ApsStreamDiag = { pipingLayerObjects: 0, pipingLayers: {}, hardwareBlocks: {} };
     const pipeline = Readable.fromWeb(res.body as never)
       .pipe(parser())
       .pipe(pick({ filter: 'data.collection' }))
@@ -203,6 +222,19 @@ function streamCollection(res: Response): Promise<{ collection: SlimObj[]; total
       const cat = p?.Element?.Category;
       const typ = p?.Item?.Type;
       const itemName = String(p?.Item?.Name ?? value.name ?? '');
+      // Teşhis sayaçları — obje TUTULMAZ, yalnız sayılır (bellek sabit kalır)
+      const layer = p?.General?.Layer;
+      if (layer && PIPING_LAYER.test(layer)) {
+        diag.pipingLayerObjects++;
+        if (diag.pipingLayers[layer] !== undefined || Object.keys(diag.pipingLayers).length < MAX_DIAG_KEYS.layers) {
+          diag.pipingLayers[layer] = (diag.pipingLayers[layer] ?? 0) + 1;
+        }
+      }
+      if (typ === 'Block' && CATALOG_BLOCK.test(itemName)) {
+        if (diag.hardwareBlocks[itemName] !== undefined || Object.keys(diag.hardwareBlocks).length < MAX_DIAG_KEYS.blocks) {
+          diag.hardwareBlocks[itemName] = (diag.hardwareBlocks[itemName] ?? 0) + 1;
+        }
+      }
       const sourceFile = String(p?.Item?.['Source File'] ?? '');
       const partNumber = String(p?.Project?.['Part Number'] ?? '');
       const isRevit = Boolean(p?.Element?.Id && cat && REVIT_PIPING.has(cat));
@@ -243,7 +275,7 @@ function streamCollection(res: Response): Promise<{ collection: SlimObj[]; total
         },
       });
     });
-    pipeline.on('end', () => resolve({ collection: kept, totalCount: total }));
+    pipeline.on('end', () => resolve({ collection: kept, totalCount: total, diag }));
     pipeline.on('error', reject);
   });
 }
@@ -261,7 +293,7 @@ export async function apsAdvance(urn: string, knownGuid?: string): Promise<ApsPh
 export async function apsFetchProperties(urn: string, guid: string): Promise<
   | { phase: 'failed'; message: string }
   | { phase: 'extracting'; guid: string }
-  | { phase: 'ready'; guid: string; collection: unknown[]; totalCount: number }
+  | { phase: 'ready'; guid: string; collection: unknown[]; totalCount: number; diag: ApsStreamDiag }
 > {
   // property DB büyük modelde dakikalar sürebilir: 202 = hazırlanıyor
   const pr = await authed(`/modelderivative/v2/designdata/${urn}/metadata/${guid}/properties?forceget=true`);
@@ -269,8 +301,8 @@ export async function apsFetchProperties(urn: string, guid: string): Promise<
   if (pr.status !== 200) return { phase: 'failed', message: `APS properties ${pr.status}` };
   // boyut sınırı YOK: akış sırasında aile-filtresi + grup-inceltme (bellek güvenli)
   try {
-    const { collection, totalCount } = await streamCollection(pr);
-    return { phase: 'ready', guid, collection, totalCount };
+    const { collection, totalCount, diag } = await streamCollection(pr);
+    return { phase: 'ready', guid, collection, totalCount, diag };
   } catch (e) {
     return { phase: 'failed', message: e instanceof Error ? e.message.slice(0, 200) : 'property akışı okunamadı' };
   }

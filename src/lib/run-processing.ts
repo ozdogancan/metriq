@@ -449,14 +449,43 @@ export async function advanceApsRun(
     }
     const output = extractFromApsProps(propertyState.collection, selection.rules, propertyState.totalCount);
     const analysis = extractionQuality(output);
-    const finalAps = { ...aps, claimedUntil: new Date(0).toISOString(), analysis };
     if (output.quality === 'none') {
-      await updateRunMeta(scope, id, { aps: finalAps });
+      // Kör "desteklenmiyor" yerine teşhis: modelde NE vardı, NEDEN okunamadı.
+      // (Model 16Dec vakası: 14.135 obje, 12 "Piping" katmanında yalın katılar,
+      // Sikla-tipi donanım blokları — ama hiçbir objede ölçü/çap alanı yok.)
+      const diag = propertyState.diag;
+      const pipingN = diag?.pipingLayerObjects ?? 0;
+      const layerNames = Object.entries(diag?.pipingLayers ?? {})
+        .sort((a, b) => b[1] - a[1]).slice(0, 3).map(([name]) => name);
+      const hardware = Object.entries(diag?.hardwareBlocks ?? {});
+      if (hardware.length) {
+        analysis.candidates = [
+          ...(analysis.candidates ?? []),
+          ...hardware.sort((a, b) => b[1] - a[1]).slice(0, 30).map(([name, count]) => ({
+            kind: 'piping-component' as const,
+            code: 'HARDWARE',
+            label: name.replace(/-\+-/g, ' ').replace(/_/g, ' ').slice(0, 80),
+            count,
+            s1: null,
+            s2: 0,
+            confidence: 0.9, // adet kesin (blok sayımı); eşleme/kapsam insan kararı
+          })),
+        ];
+      }
+      const finalApsNone = { ...aps, claimedUntil: new Date(0).toISOString(), analysis };
+      await updateRunMeta(scope, id, { aps: finalApsNone, analysis });
+      const detailTr = pipingN
+        ? ` Modelde ${pipingN} obje boru katmanlarında (${layerNames.join(', ')}) ama hiçbirinde ölçü/çap alanı yok — bu NWD "yalın geometri" olarak yayınlanmış. Kaynak model property'lerle yayınlanırsa otomatik metraj mümkün olur.`
+        : '';
+      const detailEn = pipingN
+        ? ` The model has ${pipingN} objects on piping layers (${layerNames.join(', ')}) but none carry size/length data — this NWD was published as bare geometry. Re-publishing the source model with properties would enable automatic take-off.`
+        : '';
       const message = lang === 'tr'
-        ? 'Modelde güvenilir yapısal MTO kanıtı bulunamadı; geometriye bakarak miktar uydurulmadı.'
-        : 'No reliable structured MTO evidence was found; quantities were not inferred from geometry.';
-      return failRun(scope, { ...run, aps: finalAps }, lang, message, stages);
+        ? `Modelde güvenilir yapısal MTO kanıtı bulunamadı; geometriye bakarak miktar uydurulmadı.${detailTr}`
+        : `No reliable structured MTO evidence was found; quantities were not inferred from geometry.${detailEn}`;
+      return failRun(scope, { ...run, aps: finalApsNone }, lang, message, stages);
     }
+    const finalAps = { ...aps, claimedUntil: new Date(0).toISOString(), analysis };
 
     const familyLabel = output.family.replace(/-/g, ' ');
     stages = stageSet(stages, 'scan', 'done', { bulut: familyLabel, obje: output.totalCount });
