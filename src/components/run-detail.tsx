@@ -1045,11 +1045,33 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, freshId, onApplie
     initialProfile?.name ?? (tr ? `${run.projectName} kalibrasyonu` : `${run.projectName} calibration`));
 
   const problems = answer.rows.filter(r => r.status !== 'match');
+
+  // Kod-bazlı KAPSAM: kullanıcı "bu kodları sayma" diyebilir (örn. flanş/collar
+  // sistemi kalibrasyonla öğretilene dek). Tam skor ASLA gizlenmez — yanına
+  // "seçili kapsam" skoru eklenir. Seçim vocab-bazlı localStorage'da kalıcıdır;
+  // hariç tutulan kodların satırları kalibrasyonda "bizimki kalsın" sayılır.
+  const exclKey = `metriq-cmp-excl-${run.vocab}`;
+  const [excludedCodes, setExcludedCodes] = useState<Set<string>>(() => {
+    if (typeof window === 'undefined') return new Set();
+    try { return new Set<string>(JSON.parse(window.localStorage.getItem(exclKey) ?? '[]')); }
+    catch { return new Set(); }
+  });
+  function saveExcluded(next: Set<string>) {
+    setExcludedCodes(next);
+    try { window.localStorage.setItem(exclKey, JSON.stringify([...next])); } catch { /* gizli mod */ }
+  }
+  const CORE_EXCLUDE = /FLANGE|^COLLAR$|^MV$|^CV$|^GASKET$|^BOLT|PIPE CUT|BEND CUT|WELDOLET|BSP FITTING/;
+  const distinctCodes = [...new Set(answer.rows.map(r => r.code))].sort();
+  const scoped = excludedCodes.size ? answer.rows.filter(r => !excludedCodes.has(r.code)) : answer.rows;
+  const scopedProblems = scoped.filter(r => r.status !== 'match');
+  const scopedAccuracy = scoped.length
+    ? Math.round((scoped.filter(r => r.status === 'match').length / scoped.length) * 1000) / 10 : 100;
+
   // tablo havuzu: uyum çubuğundaki duruma tıklayınca o durum filtrelenir.
   // Fark SIFIRSA (%100) varsayılan görünüm eşleşenlerdir — kullanıcı "iki tarafın
   // değerini satır satır görmem lazım" dedi; boş tablo göstermek yanlıştı.
-  const effectiveFilter = filter === 'diffs' && problems.length === 0 ? 'match' : filter;
-  const pool = effectiveFilter === 'diffs' ? problems : answer.rows.filter(r => r.status === effectiveFilter);
+  const effectiveFilter = filter === 'diffs' && scopedProblems.length === 0 ? 'match' : filter;
+  const pool = effectiveFilter === 'diffs' ? scopedProblems : scoped.filter(r => r.status === effectiveFilter);
   const shownRows = showAll ? pool : pool.slice(0, 12);
   const applied = Boolean(answer.appliedAt);
   const decidable = !applied && problems.length > 0 && problems.every(r => r.id);
@@ -1066,7 +1088,8 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, freshId, onApplie
     if (decisions.size > 0 && !window.confirm(tr
       ? `Satır bazlı ${decisions.size} seçimin var — hepsinin üzerine yazılsın mı?`
       : `You have ${decisions.size} per-row selections — overwrite them all?`)) return;
-    setDecisions(new Map(problems.filter(r => r.id).map(r => [r.id!, c])));
+    // yalnız kapsam İÇİ satırlar toplu karara girer; hariç tutulan kodlar "bizimki" kalır
+    setDecisions(new Map(scopedProblems.filter(r => r.id).map(r => [r.id!, c])));
   }
 
   // canlı öngörü: bu kararlarla karne yüzde kaça çıkar
@@ -1121,15 +1144,27 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, freshId, onApplie
   // Tek tık: Excel'in TAMAMINI kabul et ve hemen kalibre et (kullanıcının ana akışı)
   function acceptAllAndCalibrate() {
     if (busy || dirty) return;
-    const inputs: CalibrationDecisionInput[] = problems.filter(r => r.id).map(r => ({ itemId: r.id!, choice: 'answer' as const }));
+    // hariç tutulan kodlarda BİZİM değer korunur; kapsam içindekiler Excel'i alır
+    const inputs: CalibrationDecisionInput[] = problems.filter(r => r.id).map(r => ({
+      itemId: r.id!,
+      choice: excludedCodes.has(r.code) ? 'ours' as const : 'answer' as const,
+    }));
     if (!inputs.length) return;
     const proj = projectedAccuracy(answer, inputs);
-    const fd = answer.counts.fieldDiff ?? 0;
+    const sc = { missing: 0, extra: 0, qd: 0 };
+    for (const r of scopedProblems) {
+      if (r.status === 'missing') sc.missing++;
+      else if (r.status === 'extra') sc.extra++;
+      else sc.qd++;
+    }
+    const exclNote = excludedCodes.size
+      ? (tr ? `\n· Hariç tutulan ${excludedCodes.size} kodun satırları bizim değerle KALIR` : `\n· Rows of the ${excludedCodes.size} excluded codes KEEP our values`)
+      : '';
     const ok = window.confirm(tr
-      ? `Excel cevabının TAMAMI kabul edilecek:\n\n· ${answer.counts.missing} eksik kalem eklenecek\n· ${answer.counts.extra} fazla kalem çıkarılacak\n· ${answer.counts.qtyDiff + fd} kalem Excel değerine güncellenecek\n\nKarne %${answer.accuracy} → %${proj}. Profil bu kararlardan kural öğrenir ve sonraki dosyaya otomatik uygulanır. Devam?`
-      : `The ENTIRE Excel answer will be accepted:\n\n· ${answer.counts.missing} missing items added\n· ${answer.counts.extra} extra items removed\n· ${answer.counts.qtyDiff + fd} items updated to Excel values\n\nScorecard ${answer.accuracy}% → ${proj}%. The profile learns rules from this and auto-applies to the next file. Continue?`);
+      ? `Excel cevabı kabul edilecek:\n\n· ${sc.missing} eksik kalem eklenecek\n· ${sc.extra} fazla kalem çıkarılacak\n· ${sc.qd} kalem Excel değerine güncellenecek${exclNote}\n\nKarne %${answer.accuracy} → %${proj}. Profil bu kararlardan kural öğrenir ve sonraki dosyaya otomatik uygulanır. Devam?`
+      : `The Excel answer will be accepted:\n\n· ${sc.missing} missing items added\n· ${sc.extra} extra items removed\n· ${sc.qd} items updated to Excel values${exclNote}\n\nScorecard ${answer.accuracy}% → ${proj}%. The profile learns rules from this and auto-applies to the next file. Continue?`);
     if (!ok) return;
-    setDecisions(new Map(inputs.map(i => [i.itemId, 'answer' as const])));
+    setDecisions(new Map(inputs.map(i => [i.itemId, i.choice])));
     void applyWith(inputs);
   }
 
@@ -1153,6 +1188,15 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, freshId, onApplie
         </span>
         <span className="num text-[22px] font-bold" style={{ color: accColor }}>%{answer.accuracy}</span>
         <span className="font-data text-[10px] text-muted">{tr ? 'tam kalem uyumu' : 'exact item match'}</span>
+        {excludedCodes.size > 0 && (
+          <span className="chip" title={tr
+            ? `Hariç tutulan kodlar: ${[...excludedCodes].join(', ')}`
+            : `Excluded codes: ${[...excludedCodes].join(', ')}`}
+            style={{ borderColor: 'color-mix(in oklab, var(--color-copper) 55%, transparent)' }}>
+            {tr ? 'seçili kapsam' : 'scoped'} <b className="num text-[13px] text-copper">%{scopedAccuracy}</b>
+            <span className="text-muted"> · {excludedCodes.size} {tr ? 'kod hariç' : 'excluded'}</span>
+          </span>
+        )}
         {decidable && changedCount > 0 && projected !== answer.accuracy && (
           <span className="num text-[13px] text-mint">→ %{projected}</span>
         )}
@@ -1199,6 +1243,48 @@ function AnswerPanel({ lang, run, answer, calibrations, dirty, freshId, onApplie
           ))}
         </div>
       </div>
+
+      {/* Kapsam editörü: "bu kodları sayma" — tam skor kalır, seçili kapsam yanına gelir */}
+      <details className="mt-3 rounded border border-line px-3.5 py-2">
+        <summary className="cursor-pointer select-none font-data text-[11.5px] text-muted hover:text-ink">
+          🎛 {tr ? 'Kapsam: hangi kodlar karşılaştırmaya girsin' : 'Scope: which codes to compare'}
+          {excludedCodes.size > 0 && <span className="text-copper"> · {excludedCodes.size} {tr ? 'hariç' : 'excluded'}</span>}
+        </summary>
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          <button type="button"
+            onClick={() => saveExcluded(new Set(distinctCodes.filter(c => CORE_EXCLUDE.test(c))))}
+            className="rounded border border-copper/50 px-2 py-0.5 font-data text-[10.5px] text-copper hover:bg-copper/10">
+            {tr ? 'Çekirdek (boru+fitting)' : 'Core (pipe+fittings)'}
+          </button>
+          <button type="button" onClick={() => saveExcluded(new Set())}
+            className="rounded border border-line px-2 py-0.5 font-data text-[10.5px] text-muted hover:text-ink">
+            {tr ? 'Tümünü dahil et' : 'Include all'}
+          </button>
+          <span className="font-data text-[10px] text-muted">
+            {tr ? '— koda tıkla: hariç/dahil. Hariç kodların satırları kalibrasyonda bizim değerle kalır.'
+              : '— click a code to toggle. Excluded codes keep our values during calibration.'}
+          </span>
+        </div>
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {distinctCodes.map(code => {
+            const off = excludedCodes.has(code);
+            return (
+              <button key={code} type="button"
+                onClick={() => {
+                  const next = new Set(excludedCodes);
+                  if (off) next.delete(code); else next.add(code);
+                  saveExcluded(next);
+                }}
+                className={`rounded border px-2 py-0.5 font-data text-[10.5px] transition-colors ${off
+                  ? 'border-line text-muted line-through opacity-60 hover:opacity-90'
+                  : 'border-line text-ink hover:border-copper/60'}`}
+                title={off ? (tr ? 'Dahil et' : 'Include') : (tr ? 'Hariç tut' : 'Exclude')}>
+                {code}
+              </button>
+            );
+          })}
+        </div>
+      </details>
 
       {/* Model-dışı kalemler: GA/DWG referansı boş ya da RFI — modelden ölçülemez */}
       {(answer.externalItems?.length ?? 0) > 0 && (() => {
