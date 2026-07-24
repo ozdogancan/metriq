@@ -23,7 +23,7 @@ function safeSegment(value: string): boolean {
  * APS application for another customer's derivative.
  */
 export function authorizeViewerPath(slug: readonly string[], ownedUrn: string): AuthorizedViewerPath | null {
-  if (!SOURCE_URN.test(ownedUrn) || slug.length < 4 || slug.length > 7) return null;
+  if (!SOURCE_URN.test(ownedUrn) || slug.length < 4 || slug.length > 40) return null;
   if (slug[0] !== 'derivativeservice' || slug[1] !== 'v2') return null;
   if (!slug.every(safeSegment)) return null;
 
@@ -37,10 +37,17 @@ export function authorizeViewerPath(slug: readonly string[], ownedUrn: string): 
 
   const operation = slug[operationIndex];
   const targets = slug.slice(operationIndex + 1);
-  // Viewer encodes the complete URN as one path parameter. Reject unencoded
-  // slashes so there is only one canonical interpretation of the request.
-  if (targets.length !== 1) return null;
-  const target = targets[0];
+  // Viewer, endpoint-override modunda derivative varlık yolunu KODLAMADAN
+  // gönderir: "derivatives/urn:adsk.viewing:fs.file:<b64>/output/geom.svf".
+  // Next.js catch-all bunu '/' üzerinden ÇOK segmente böler — tek-segment
+  // varsayımı her derivative isteğini 403'e düşürüyordu (gerçek vaka:
+  // manifest 200 ama model yüklenmiyor, "Failed to fetch"). Segmentler
+  // birleştirilip sahiplik tam URN önekiyle doğrulanır; tekil kaynak
+  // operasyonları (manifest/thumbnails) tek segment kalmaya devam eder.
+  if (targets.length < 1) return null;
+  if (operation !== 'derivatives' && targets.length !== 1) return null;
+  const target = targets.join('/');
+  if (target.length > MAX_RESOURCE_CHARS) return null;
 
   let kind: AuthorizedViewerPath['kind'];
   let upstreamTarget = target;
@@ -63,6 +70,10 @@ export function authorizeViewerPath(slug: readonly string[], ownedUrn: string): 
     return null;
   }
 
-  const canonical = [...prefix, operation, encodeURIComponent(upstreamTarget)].join('/');
+  // Segment-bazlı kodlama: '/' yol ayracı kalır (cdn hem ham hem kodlanmış
+  // biçimi kabul ediyor — canlı doğrulandı), ':' gibi karakterler güvenle kodlanır.
+  const canonical = [...prefix, operation,
+    ...upstreamTarget.split('/').map(part => encodeURIComponent(part)),
+  ].join('/');
   return { upstreamPath: canonical, kind };
 }

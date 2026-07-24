@@ -60,3 +60,33 @@ console.log('viewer policy: urn:-prefixed manifest regression covered');
     'derivative URN formu upstream\'e OLDUGU GIBI gitmeli');
 }
 console.log('viewer policy: upstream bare-urn normalization covered');
+
+// Viewer endpoint-override modunda derivative yolunu KODLAMADAN gonderir;
+// Next catch-all '/' uzerinden coka boler. Cok-segment hedef desteklenmeli
+// (gercek vaka: manifest 200 ama her derivative istegi 403 -> model yuklenmez).
+{
+  const OWNED = 'dXJuOmFkc2sub2JqZWN0czpvcy5vYmplY3Q6dGVzdC90ZXN0LW93bmVk';
+  const multi = authorizeViewerPath(
+    ['derivativeservice', 'v2', 'derivatives', `urn:adsk.viewing:fs.file:${OWNED}`, 'output', 'Resource', 'geom.svf'],
+    OWNED,
+  );
+  assert.ok(multi && multi.kind === 'derivative', 'cok-segment derivative kabul edilmeli');
+  assert.ok(multi.upstreamPath.endsWith('/output/Resource/geom.svf'), 'yol ayraclari korunmali');
+  assert.ok(multi.upstreamPath.includes(encodeURIComponent(`urn:adsk.viewing:fs.file:${OWNED}`)), 'segmentler tek tek kodlanmali');
+  const foreignMulti = authorizeViewerPath(
+    ['derivativeservice', 'v2', 'derivatives', 'urn:adsk.viewing:fs.file:BASKASININMODELIBASKASININ', 'output', 'geom.svf'],
+    OWNED,
+  );
+  assert.equal(foreignMulti, null, 'yabanci cok-segment derivative reddedilmeli');
+  const multiManifest = authorizeViewerPath(
+    ['derivativeservice', 'v2', 'manifest', `urn:${OWNED}`, 'fazladan'],
+    OWNED,
+  );
+  assert.equal(multiManifest, null, 'manifest tek segment kalmali');
+  const dotEscape = authorizeViewerPath(
+    ['derivativeservice', 'v2', 'derivatives', `urn:adsk.viewing:fs.file:${OWNED}`, '..', 'gizli'],
+    OWNED,
+  );
+  assert.equal(dotEscape, null, 'yol kacisi (..) reddedilmeli');
+}
+console.log('viewer policy: multi-segment derivative paths covered');
